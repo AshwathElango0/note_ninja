@@ -8,7 +8,6 @@ from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
 import numpy as np
-import io
 
 # Set up API key for Gemini embedding
 google_api_key = "AIzaSyAw786vp_FhAWxi9vce2IoHon53sGxeCdk"
