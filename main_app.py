@@ -7,7 +7,6 @@ from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
 import torch
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
-from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
