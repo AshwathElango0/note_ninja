@@ -35,20 +35,6 @@ def extract_text_with_tesseract(image):
         st.error(f"Error during OCR: {e}")
         return ""
 
-# Function to extract text using LayoutLM
-# def extract_text_with_layoutlm(image):
-#     try:
-#         encoding = layoutlm_processor(image, return_tensors="pt")
-#         outputs = layoutlm_model(**encoding)
-#         logits = outputs.logits
-#         predicted_ids = torch.argmax(logits, dim=-1)
-#         tokens = layoutlm_processor.tokenizer.convert_ids_to_tokens(predicted_ids[0].tolist())
-#         text = " ".join(tokens).replace("[PAD]", "").replace("[CLS]", "").replace("[SEP]", "")
-#         return text.strip()
-#     except Exception as e:
-#         st.error(f"Error during LayoutLM text extraction: {e}")
-#         return ""
-
 def extract_text_with_layoutlm(image):
     """
     Extract text from an image using LayoutLMv3 by leveraging the model's predictions.
@@ -111,7 +97,6 @@ def process_and_index_data(directory, embedder, gemini_model):
     try:
         reader = SimpleDirectoryReader(directory)
         documents = reader.load_data()
-        nodes = SentenceSplitter().get_nodes_from_documents(documents)
         vector_store = VectorStoreIndex.from_documents(documents=documents, **{'embed_model': embedder})
         query_engine = vector_store.as_query_engine(llm=gemini_model)
         return query_engine
@@ -139,7 +124,7 @@ if uploaded_note_file:
 
     # Select processing method
     st.info("Processing handwritten notes...")
-    method = st.radio("Select Text Extraction Method:", ["Tesseract (OCR)", "LayoutLM"], index=0)
+    method = st.radio("Select Text Extraction Method:", ["LayoutLM", "Tesseract (OCR)"], index=0)
     
     # Extract text based on file type
     if uploaded_note_file.name.lower().endswith(".pdf"):
