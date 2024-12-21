@@ -1,15 +1,14 @@
 import os
-import pytesseract
+import easyocr
 import streamlit as st
 from PIL import Image
-import pymupdf  # PyMuPDF
-from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
-from transformers import LayoutLMv3Processor, LayoutLMv3Model
-import torch
+import pymupdf
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
+import numpy as np
+import io
 
 # Set up API key for Gemini embedding
 google_api_key = "AIzaSyAw786vp_FhAWxi9vce2IoHon53sGxeCdk"
@@ -20,61 +19,27 @@ if not os.environ.get('GOOGLE_API_KEY'):
 gemini_model = Gemini(model="models/gemini-1.5-flash", api_key=google_api_key)
 embedder = GeminiEmbedding(model_name="models/embedding-001")
 
-# Initialize LayoutLMv3 Processor and Model
-layoutlm_processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", revision="main")
-layoutlm_model = LayoutLMv3Model.from_pretrained("microsoft/layoutlmv3-base", revision="main")
+# Initialize EasyOCR reader
+reader = easyocr.Reader(['en'])  # You can add other languages if needed (e.g., ['en', 'de'])
 
-# Function to extract text using Tesseract OCR
-def extract_text_with_tesseract(image):
-    try:
-        text = pytesseract.image_to_string(image, lang='eng')
-        return text.strip()
-    except Exception as e:
-        st.error(f"Error during OCR: {e}")
-        return ""
-
-def extract_text_with_layoutlm(image):
+def extract_text_with_easyocr(image):
     """
-    Extract text from an image using LayoutLMv3 by leveraging the model's predictions.
+    Extract text from an image using EasyOCR.
+    Converts the image into a format that EasyOCR supports (NumPy array).
     """
     try:
-        # Preprocess the input image
-        encoding = layoutlm_processor(image, return_tensors="pt", truncation=True, padding="max_length", max_length=512)
-        input_ids = encoding["input_ids"]
-        
-        # Forward pass through the model
-        outputs = layoutlm_model(**encoding)
-        
-        # Obtain token predictions (logits)
-        logits = outputs.last_hidden_state  # Shape: (batch_size, sequence_length, num_labels)
-        
-        # Convert logits to predicted IDs
-        predicted_ids = torch.argmax(logits, dim=-1)  # Shape: (batch_size, sequence_length)
+        # Convert PIL Image to NumPy array (which EasyOCR supports)
+        image_np = np.array(image)
 
-        # Convert input token IDs to tokens
-        tokens = layoutlm_processor.tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+        # Run EasyOCR text detection
+        result = reader.readtext(image_np)
 
-        # Map predicted IDs to labels (if classification is enabled)
-        predicted_labels = [layoutlm_model.config.id2label[pred_id.item()] for pred_id in predicted_ids[0]]
-
-        # Filter out special tokens and corresponding predictions
-        filtered_tokens_and_labels = [
-            (token, label) 
-            for token, label in zip(tokens, predicted_labels)
-            if token not in {"[PAD]", "[CLS]", "[SEP]"}
-        ]
-
-        # Extract meaningful text based on predictions (Optional: filter by specific labels)
-        meaningful_tokens = [token for token, label in filtered_tokens_and_labels if label != "O"]  # 'O' = Outside entity
-
-        # Join meaningful tokens to form extracted text
-        extracted_text = " ".join(meaningful_tokens)
-        
+        # Extract the text parts from the result
+        extracted_text = " ".join([text[1] for text in result])
         return extracted_text.strip()
     except Exception as e:
-        st.error(f"Error during LayoutLM text extraction: {e}")
+        st.error(f"Error during EasyOCR text extraction: {e}")
         return ""
-
 
 # Function to extract images from PDF pages using PyMuPDF
 def extract_images_from_pdf(pdf_path):
@@ -122,23 +87,17 @@ if uploaded_note_file:
 
     # Select processing method
     st.info("Processing handwritten notes...")
-    method = st.radio("Select Text Extraction Method:", ["LayoutLM", "Tesseract (OCR)"], index=0)
+    method = st.radio("Select Text Extraction Method:", ["EasyOCR"], index=0)
     
     # Extract text based on file type
+    extracted_text = ""
     if uploaded_note_file.name.lower().endswith(".pdf"):
         images = extract_images_from_pdf(temp_note_file_path)
-        extracted_text = ""
         for img in images:
-            if method == "LayoutLM":
-                extracted_text += extract_text_with_layoutlm(img) + "\n"
-            else:
-                extracted_text += extract_text_with_tesseract(img) + "\n"
+            extracted_text += extract_text_with_easyocr(img) + "\n"
     else:
         image = Image.open(temp_note_file_path)
-        if method == "LayoutLM":
-            extracted_text = extract_text_with_layoutlm(image)
-        else:
-            extracted_text = extract_text_with_tesseract(image)
+        extracted_text = extract_text_with_easyocr(image)
 
     # Display extracted text
     st.write("Extracted Text from Handwritten Notes:")
