@@ -8,7 +8,6 @@ from transformers import LayoutLMv3Processor, LayoutLMv3Model
 import torch
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
-from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
 
@@ -23,7 +22,6 @@ embedder = GeminiEmbedding(model_name="models/embedding-001")
 
 # Initialize LayoutLMv3 Processor and Model
 layoutlm_processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", revision="main")
-# layoutlm_model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base", revision="main")
 layoutlm_model = LayoutLMv3Model.from_pretrained("microsoft/layoutlmv3-base", revision="main")
 
 # Function to extract text using Tesseract OCR
