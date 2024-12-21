@@ -4,6 +4,7 @@ import streamlit as st
 from PIL import Image
 import pymupdf  # PyMuPDF
 from transformers import LayoutLMv3Processor, LayoutLMv3ForTokenClassification
+from transformers import LayoutLMv3Processor, LayoutLMv3Model
 import torch
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
@@ -22,7 +23,8 @@ embedder = GeminiEmbedding(model_name="models/embedding-001")
 
 # Initialize LayoutLMv3 Processor and Model
 layoutlm_processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", revision="main")
-layoutlm_model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base", revision="main")
+# layoutlm_model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base", revision="main")
+layoutlm_model = LayoutLMv3Model.from_pretrained("microsoft/layoutlmv3-base", revision="main")
 
 # Function to extract text using Tesseract OCR
 def extract_text_with_tesseract(image):
@@ -34,18 +36,61 @@ def extract_text_with_tesseract(image):
         return ""
 
 # Function to extract text using LayoutLM
+# def extract_text_with_layoutlm(image):
+#     try:
+#         encoding = layoutlm_processor(image, return_tensors="pt")
+#         outputs = layoutlm_model(**encoding)
+#         logits = outputs.logits
+#         predicted_ids = torch.argmax(logits, dim=-1)
+#         tokens = layoutlm_processor.tokenizer.convert_ids_to_tokens(predicted_ids[0].tolist())
+#         text = " ".join(tokens).replace("[PAD]", "").replace("[CLS]", "").replace("[SEP]", "")
+#         return text.strip()
+#     except Exception as e:
+#         st.error(f"Error during LayoutLM text extraction: {e}")
+#         return ""
+
 def extract_text_with_layoutlm(image):
+    """
+    Extract text from an image using LayoutLMv3 by leveraging the model's predictions.
+    """
     try:
-        encoding = layoutlm_processor(image, return_tensors="pt")
+        # Preprocess the input image
+        encoding = layoutlm_processor(image, return_tensors="pt", truncation=True, padding="max_length", max_length=512)
+        input_ids = encoding["input_ids"]
+        
+        # Forward pass through the model
         outputs = layoutlm_model(**encoding)
-        logits = outputs.logits
-        predicted_ids = torch.argmax(logits, dim=-1)
-        tokens = layoutlm_processor.tokenizer.convert_ids_to_tokens(predicted_ids[0].tolist())
-        text = " ".join(tokens).replace("[PAD]", "").replace("[CLS]", "").replace("[SEP]", "")
-        return text.strip()
+        
+        # Obtain token predictions (logits)
+        logits = outputs.last_hidden_state  # Shape: (batch_size, sequence_length, num_labels)
+        
+        # Convert logits to predicted IDs
+        predicted_ids = torch.argmax(logits, dim=-1)  # Shape: (batch_size, sequence_length)
+
+        # Convert input token IDs to tokens
+        tokens = layoutlm_processor.tokenizer.convert_ids_to_tokens(input_ids[0].tolist())
+
+        # Map predicted IDs to labels (if classification is enabled)
+        predicted_labels = [layoutlm_model.config.id2label[pred_id.item()] for pred_id in predicted_ids[0]]
+
+        # Filter out special tokens and corresponding predictions
+        filtered_tokens_and_labels = [
+            (token, label) 
+            for token, label in zip(tokens, predicted_labels)
+            if token not in {"[PAD]", "[CLS]", "[SEP]"}
+        ]
+
+        # Extract meaningful text based on predictions (Optional: filter by specific labels)
+        meaningful_tokens = [token for token, label in filtered_tokens_and_labels if label != "O"]  # 'O' = Outside entity
+
+        # Join meaningful tokens to form extracted text
+        extracted_text = " ".join(meaningful_tokens)
+        
+        return extracted_text.strip()
     except Exception as e:
         st.error(f"Error during LayoutLM text extraction: {e}")
         return ""
+
 
 # Function to extract images from PDF pages using PyMuPDF
 def extract_images_from_pdf(pdf_path):
