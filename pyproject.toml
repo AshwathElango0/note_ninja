@@ -17,6 +17,7 @@ llama-index = "^0.12.8"
 llama-index-embeddings-google = "^0.3.0"
 llama-index-llms-gemini = "^0.4.2"
 accelerate = "^1.2.1"
+easyocr = "^1.7.2"
 
 
 [build-system]
