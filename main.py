@@ -1,5 +1,4 @@
 from transformers import DonutProcessor, VisionEncoderDecoderModel
-from transformers import DonutImageProcessor
 from PIL import Image
 
 def extract_text_from_image(image_path):
@@ -13,8 +12,8 @@ def extract_text_from_image(image_path):
         str: Extracted text from the image.
     """
     # Load the Donut processor and model
-    processor = DonutProcessor.from_pretrained("naver-clova-ix/donut-base")
-    model = VisionEncoderDecoderModel.from_pretrained("naver-clova-ix/donut-base")
+    processor = DonutProcessor.from_pretrained("nielsr/donut-base")
+    model = VisionEncoderDecoderModel.from_pretrained("nielsr/donut-base")
 
     # Open the image
     image = Image.open(image_path).convert("RGB")
@@ -31,6 +30,6 @@ def extract_text_from_image(image_path):
     return extracted_text
 
 # Example usage
-image_path = "example_image.png"
+image_path = r"C:\Users\achus\Desktop\epoch_projects\invoice_ocr\data\wordpress-pdf-invoice-plugin-sample_page-0001.jpg"
 result = extract_text_from_image(image_path)
 print(result)
