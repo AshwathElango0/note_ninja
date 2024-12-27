@@ -3,33 +3,56 @@ import easyocr
 import shutil
 import atexit
 import streamlit as st
+from tavily import TavilyClient
 from PIL import Image
-import pymupdf
+import fitz  # PyMuPDF
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
-from llama_index.core import SimpleDirectoryReader
-from llama_index.core import VectorStoreIndex
+from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
 from llama_index.core.llms import ChatMessage
+from llama_index.core.text_splitter import TokenTextSplitter
+from llama_index.core.agent import ReActAgent
+from llama_index.core.tools import FunctionTool
+from llama_index.core.memory import ChatMemoryBuffer
 import numpy as np
 import pickle
+from concurrent.futures import ThreadPoolExecutor
+
+# Constants
+CACHE_DIR = "./cache"
+TEMP_DIR = "./temp"
+DATA_DIR = "./data"
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # Set up API key for Gemini embedding
 google_api_key = "AIzaSyAw786vp_FhAWxi9vce2IoHon53sGxeCdk"
 if not os.environ.get('GOOGLE_API_KEY'):
     os.environ['GOOGLE_API_KEY'] = google_api_key
 
-# Initialize LLM models
+# Initialize models
 gemini_model = Gemini(model="models/gemini-1.5-flash", api_key=google_api_key)
 embedder = GeminiEmbedding(model_name="models/embedding-001")
+splitter = TokenTextSplitter(chunk_size=250, chunk_overlap=50)
+reader = easyocr.Reader(['en'])  # EasyOCR Reader
 
-reader = easyocr.Reader(['en']) # Initialize EasyOCR reader
+# Tavily search fn
+def search_fn(query: str, tavily_cli) -> str:
+    """Search the web and answer a query"""
+    return tavily_cli.search(query)
 
-CACHE_DIR = "./cache"  # Global cache directory
+tavily_api_key = "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"
+tavily_cli = TavilyClient(api_key=tavily_api_key)
 
+tavily_tool = FunctionTool.from_defaults(fn=search_fn)
+# Initialize ReActAgent
+buffer = ChatMemoryBuffer(token_limit=10000)
+agent = ReActAgent.from_tools(tools=[tavily_tool], llm=gemini_model, memory=buffer)
+
+# Caching utilities
 def cache_file(file_path):
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_path = os.path.join(CACHE_DIR, os.path.basename(file_path))
-    return cache_path
+    return os.path.join(CACHE_DIR, os.path.basename(file_path))
 
 def save_to_cache(obj, cache_path):
     with open(cache_path, 'wb') as cache_file:
@@ -41,29 +64,10 @@ def load_from_cache(cache_path):
             return pickle.load(cache_file)
     return None
 
-def extract_text_with_easyocr(image):
-    """
-    Extract text from an image using EasyOCR.
-    Converts the image into a format that EasyOCR supports (NumPy array).
-    """
-    try:
-        # Convert PIL Image to NumPy array (which EasyOCR supports)
-        image_np = np.array(image)
-
-        # Run EasyOCR text detection
-        result = reader.readtext(image_np)
-
-        # Extract the text parts from the result
-        extracted_text = " ".join([text[1] for text in result])
-        return extracted_text.strip()
-    except Exception as e:
-        st.sidebar.error(f"Error during EasyOCR text extraction: {e}")
-        return ""
-
-# Function to extract images from PDF pages using PyMuPDF
+# Extract images from PDF pages using PyMuPDF
 def extract_images_from_pdf(pdf_path):
     try:
-        doc = pymupdf.open(pdf_path)
+        doc = fitz.open(pdf_path)
         images = []
         for page_num in range(len(doc)):
             pix = doc[page_num].get_pixmap()
@@ -74,123 +78,129 @@ def extract_images_from_pdf(pdf_path):
         st.sidebar.error(f"Error extracting images from PDF: {e}")
         return []
 
-# Function to process and index data for RAG
+# EasyOCR text extraction
+def extract_text_with_easyocr(image):
+    try:
+        image_np = np.array(image)  # Convert PIL image to NumPy array
+        result = reader.readtext(image_np)
+        return " ".join([text[1] for text in result]).strip()
+    except Exception as e:
+        st.sidebar.error(f"Error during EasyOCR text extraction: {e}")
+        return ""
+
+# Parallel text splitting
+def process_documents_in_parallel(documents, splitter):
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        # Split each document's text into chunks
+        split_results = executor.map(lambda doc: splitter.split_text(doc.text), documents)
+    # Flatten the results
+    return [chunk for chunks in split_results for chunk in chunks]
+
+# Build or update vector store
 def process_and_index_data(directory, embedder):
     try:
         reader = SimpleDirectoryReader(directory)
         documents = reader.load_data()
-        vector_store = VectorStoreIndex.from_documents(documents=documents, **{'embed_model': embedder})
-        return vector_store
+        # Split the documents into chunks
+        chunks = process_documents_in_parallel(documents, splitter)
+        # Create Document objects from chunks
+        document_chunks = [Document(text=chunk) for chunk in chunks]
+        # Build the vector store index
+        return VectorStoreIndex.from_documents(documents=document_chunks, embed_model=embedder)
     except Exception as e:
         st.sidebar.error(f"Error building knowledge base: {e}")
         return None
 
-# Register cleanup function for cache
+
+def update_vector_store(vector_store, new_documents, embedder):
+    try:
+        nodes = process_documents_in_parallel(new_documents, splitter)
+        new_docs = [Document(**{'text': node.get_content()}) for node in nodes]
+        vector_store.add_documents(documents=new_docs, embed_model=embedder)
+        return vector_store
+    except Exception as e:
+        st.sidebar.error(f"Error updating knowledge base: {e}")
+        return vector_store
+
+# Cleanup cache on exit
 def cleanup_cache():
     if os.path.exists(CACHE_DIR):
         shutil.rmtree(CACHE_DIR)
-        print(f"Cache directory {CACHE_DIR} cleaned up.")
 
 atexit.register(cleanup_cache)
 
-# Streamlit app
+# Streamlit App
 st.title("RAG System with Handwritten Notes Support")
 
-# Sidebar file uploader
+# Sidebar
 with st.sidebar:
     st.header("File Uploads")
-    uploaded_note_file = st.file_uploader("Upload PDFs or images of handwritten notes", type=['pdf', 'png', 'jpg', 'jpeg'])
+    uploaded_note_file = st.file_uploader("Upload PDFs or images", type=['pdf', 'png', 'jpg', 'jpeg'])
 
-    method = st.radio("Select Text Extraction Method:", ["EasyOCR"], index=0)   # Select processing method
-
-# Initialize session state for vector store
+# Session state
 if 'vector_store' not in st.session_state:
     st.session_state.vector_store = None
 if 'retriever' not in st.session_state:
     st.session_state.retriever = None
 if 'uploaded_files' not in st.session_state:
     st.session_state.uploaded_files = set()
+if 'conversation_memory' not in st.session_state:
+    st.session_state.conversation_memory = []
 
-# Process uploaded handwritten notes
+# Process uploaded files
 if uploaded_note_file:
-    temp_dir = "./temp/"
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_note_file_path = os.path.join(temp_dir, f"handwritten_{uploaded_note_file.name}")
+    temp_note_file_path = os.path.join(TEMP_DIR, uploaded_note_file.name)
 
-    # Save the uploaded file locally
+    # Save file locally
     with open(temp_note_file_path, "wb") as f:
         f.write(uploaded_note_file.getbuffer())
 
-    # Check if the file has already been processed
     if uploaded_note_file.name not in st.session_state.uploaded_files:
-        st.sidebar.info("Processing handwritten notes...")
-
-        # Extract text based on file type
+        st.sidebar.info("Processing file...")
         extracted_text = ""
+
         if uploaded_note_file.name.lower().endswith(".pdf"):
             images = extract_images_from_pdf(temp_note_file_path)
-            for img in images:
-                extracted_text += extract_text_with_easyocr(img) + "\n"
+            extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
         else:
             image = Image.open(temp_note_file_path)
             extracted_text = extract_text_with_easyocr(image)
 
-        # Cache the extracted text
-        cache_path = cache_file(temp_note_file_path)
-        save_to_cache(extracted_text, cache_path)
-
-        # Save extracted text for indexing
-        data_dir = "./data/"
-        os.makedirs(data_dir, exist_ok=True)
-        text_file_path = os.path.join(data_dir, f"handwritten_{uploaded_note_file.name}.txt")
+        text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
         with open(text_file_path, "w") as f:
             f.write(extracted_text)
 
-        # Index and build the knowledge base
-        st.sidebar.info("Adding to knowledge base...")
-        vector_store = process_and_index_data(data_dir, embedder)
+        if st.session_state.vector_store:
+            st.session_state.vector_store = update_vector_store(
+                st.session_state.vector_store,
+                [Document(**{'text': extracted_text})],
+                embedder
+            )
+        else:
+            st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
 
-        if vector_store:
-            st.session_state.vector_store = vector_store
-            st.session_state.retriever = vector_store.as_retriever()
-            st.sidebar.success("Handwritten notes processed and indexed. Ready for querying!")
-            st.session_state.uploaded_files.add(uploaded_note_file.name)
-    else:
-        st.sidebar.info("File already processed.")
+        st.session_state.retriever = st.session_state.vector_store.as_retriever()
+        st.session_state.uploaded_files.add(uploaded_note_file.name)
+        st.sidebar.success("File processed and indexed.")
 
-# Query interface
+# Chat-based query interface
 if st.session_state.retriever:
-    if 'conversation_memory' not in st.session_state:
-        st.session_state.conversation_memory = []
-
-    user_query = st.text_input("Ask a question based on handwritten notes:")
+    user_query = st.text_input("Ask a question based on the uploaded notes:")
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        # Create a prompt to recontextualize the current query
-        recontextualization_prompt = [
-            ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes. Recontextualize the user's query so it stands independently and removes ambiguity. Include any relevant details from the conversation history. Let it be in the voice of the user, do not make it sound like a summary generated by someone else."),
-            ChatMessage(role="user", content=f"Conversation History:\n{st.session_state.conversation_memory}\n\nCurrent Query:\n{user_query}")
-        ]
-
-        recontextualized_query = gemini_model.chat(recontextualization_prompt).message.content
-
-        # Retrieve relevant context
-        retrieved_context = st.session_state.retriever.retrieve(recontextualized_query)
+        retrieved_context = st.session_state.retriever.retrieve(user_query)
         context_text = "\n".join([doc.text for doc in retrieved_context])
-
-        # Create input prompt for LLM
         prompt_messages = [
             ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes."),
-            ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{recontextualized_query}")
+            ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{user_query}"),
         ]
-        answer = gemini_model.chat(prompt_messages).message.content
-
+        answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
         st.session_state.conversation_memory.append({"assistant": answer})
 
-        # Display conversation history
-        st.write("Conversation:")
-        for message in st.session_state.conversation_memory:
-            for role, content in message.items():
-                with st.chat_message(role):
-                    st.write(content)
+    # Display chat-like UI
+    st.write("Conversation:")
+    for message in st.session_state.conversation_memory:
+        for role, content in message.items():
+            with st.chat_message(role):
+                st.write(content)
