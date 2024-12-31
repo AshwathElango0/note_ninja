@@ -12,7 +12,7 @@ from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
 from llama_index.core.llms import ChatMessage
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import FunctionTool
+from llama_index.tools.tavily_research import TavilyToolSpec
 from llama_index.core.memory import ChatMemoryBuffer
 import numpy as np
 import pickle
@@ -37,18 +37,12 @@ embedder = GeminiEmbedding(model_name="models/embedding-001")
 splitter = TokenTextSplitter(chunk_size=250, chunk_overlap=50)
 reader = easyocr.Reader(['en'])  # EasyOCR Reader
 
-# Tavily search fn
-def search_fn(query: str, tavily_cli) -> str:
-    """Search the web and answer a query"""
-    return tavily_cli.search(query)
-
 tavily_api_key = "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"
-tavily_cli = TavilyClient(api_key=tavily_api_key)
-
-tavily_tool = FunctionTool.from_defaults(fn=search_fn)
+tavily_tool = TavilyToolSpec(api_key=tavily_api_key)
+tavily_tool_list = tavily_tool.to_tool_list()
 # Initialize ReActAgent
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=[tavily_tool], llm=gemini_model, memory=buffer)
+agent = ReActAgent.from_tools(tools=tavily_tool_list, llm=gemini_model, memory=buffer)
 
 # Caching utilities
 def cache_file(file_path):
