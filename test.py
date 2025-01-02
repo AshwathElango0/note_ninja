@@ -3,9 +3,8 @@ import easyocr
 import shutil
 import atexit
 import streamlit as st
-from tavily import TavilyClient
 from PIL import Image
-import fitz  # PyMuPDF
+import fitz
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
@@ -13,6 +12,8 @@ from llama_index.core.llms import ChatMessage
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from llama_index.tools.tavily_research import TavilyToolSpec
+from tavily import TavilyClient
+from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 import numpy as np
 import pickle
@@ -41,8 +42,28 @@ tavily_api_key = "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"
 tavily_tool = TavilyToolSpec(api_key=tavily_api_key)
 tavily_tool_list = tavily_tool.to_tool_list()
 
+tavily_cli = TavilyClient(api_key=tavily_api_key)
+
+def web_search(query: str) -> str:
+    """Function to search the web and obtain information using a search query"""
+    results = tavily_cli.search(query=query)
+    return results
+
+def mul_integers(a: int, b: int) -> int:
+    """Function to multiply 2 integers and return an integer"""
+    return a * b
+
+def add_integers(a: int, b: int) -> int:
+    """Function to add 2 integers and return an integer"""
+    return a + b
+
+add_tool = FunctionTool.from_defaults(fn=add_integers)
+mul_tool = FunctionTool.from_defaults(fn=mul_integers)
+search_tool = FunctionTool.from_defaults(fn=web_search)
+
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=tavily_tool_list, llm=gemini_model, memory=buffer)  # Initialize ReActAgent
+# agent = ReActAgent.from_tools(tools=tavily_tool_list, llm=gemini_model, memory=buffer)  # Initialize ReActAgent
+agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, search_tool], llm=gemini_model, memory=buffer)
 
 # Caching utilities
 def cache_file(file_path):
@@ -85,9 +106,7 @@ def extract_text_with_easyocr(image):
 # Parallel text splitting
 def process_documents_in_parallel(documents, splitter):
     with ThreadPoolExecutor(max_workers=4) as executor:
-        # Split each document's text into chunks
         split_results = executor.map(lambda doc: splitter.split_text(doc.text), documents)
-    # Flatten the results
     return [chunk for chunks in split_results for chunk in chunks]
 
 # Build or update vector store
@@ -95,16 +114,13 @@ def process_and_index_data(directory, embedder):
     try:
         reader = SimpleDirectoryReader(directory)
         documents = reader.load_data()
-        # Split the documents into chunks
         chunks = process_documents_in_parallel(documents, splitter)
-        # Create Document objects from chunks
         document_chunks = [Document(text=chunk) for chunk in chunks]
-        # Build the vector store index
+
         return VectorStoreIndex.from_documents(documents=document_chunks, embed_model=embedder)
     except Exception as e:
         st.sidebar.error(f"Error building knowledge base: {e}")
         return None
-
 
 def update_vector_store(vector_store, new_documents, embedder):
     try:
@@ -150,32 +166,37 @@ if uploaded_note_file:
         f.write(uploaded_note_file.getbuffer())
 
     if uploaded_note_file.name not in st.session_state.uploaded_files:
-        st.sidebar.info("Processing file...")
-        extracted_text = ""
+        with st.spinner("Processing file..."):
+            extracted_text = ""
 
-        if uploaded_note_file.name.lower().endswith(".pdf"):
-            images = extract_images_from_pdf(temp_note_file_path)
-            extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
-        else:
-            image = Image.open(temp_note_file_path)
-            extracted_text = extract_text_with_easyocr(image)
+            if uploaded_note_file.name.lower().endswith(".pdf"):
+                with st.spinner("Extracting images from PDF..."):
+                    images = extract_images_from_pdf(temp_note_file_path)
+                with st.spinner("Performing OCR on extracted images..."):
+                    extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
+            else:
+                with st.spinner("Performing OCR on the uploaded image..."):
+                    image = Image.open(temp_note_file_path)
+                    extracted_text = extract_text_with_easyocr(image)
 
-        text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
-        with open(text_file_path, "w") as f:
-            f.write(extracted_text)
+            with st.spinner("Saving extracted text to file..."):
+                text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
+                with open(text_file_path, "w") as f:
+                    f.write(extracted_text)
 
-        if st.session_state.vector_store:
-            st.session_state.vector_store = update_vector_store(
-                st.session_state.vector_store,
-                [Document(**{'text': extracted_text})],
-                embedder
-            )
-        else:
-            st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
+            with st.spinner("Indexing text into the knowledge base..."):
+                if st.session_state.vector_store:
+                    st.session_state.vector_store = update_vector_store(
+                        st.session_state.vector_store,
+                        [Document(**{'text': extracted_text})],
+                        embedder
+                    )
+                else:
+                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
 
-        st.session_state.retriever = st.session_state.vector_store.as_retriever()
-        st.session_state.uploaded_files.add(uploaded_note_file.name)
-        st.sidebar.success("File processed and indexed.")
+            st.session_state.retriever = st.session_state.vector_store.as_retriever()
+            st.session_state.uploaded_files.add(uploaded_note_file.name)
+            st.sidebar.success("File processed and indexed.")
 
 # Chat-based query interface
 if st.session_state.retriever:
@@ -183,14 +204,15 @@ if st.session_state.retriever:
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        retrieved_context = st.session_state.retriever.retrieve(user_query)
-        context_text = "\n".join([doc.text for doc in retrieved_context])
-        prompt_messages = [
-            ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes."),
-            ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{user_query}"),
-        ]
-        answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
-        st.session_state.conversation_memory.append({"assistant": answer})
+        with st.spinner("Retrieving context and generating response..."):
+            retrieved_context = st.session_state.retriever.retrieve(user_query)
+            context_text = "\n".join([doc.text for doc in retrieved_context])
+            prompt_messages = [
+                ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes."),
+                ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{user_query}"),
+            ]
+            answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
+            st.session_state.conversation_memory.append({"assistant": answer})
 
     # Display chat-like UI
     st.write("Conversation:")
