@@ -3,9 +3,8 @@ import easyocr
 import shutil
 import atexit
 import streamlit as st
-from tavily import TavilyClient
 from PIL import Image
-import fitz  # PyMuPDF
+import fitz
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
