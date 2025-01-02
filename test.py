@@ -5,10 +5,11 @@ import atexit
 import streamlit as st
 from PIL import Image
 import fitz
+import torch
+from transformers import pipeline
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
-from llama_index.core.llms import ChatMessage
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from llama_index.tools.tavily_research import TavilyToolSpec
@@ -23,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 CACHE_DIR = "./cache"
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
+
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -139,6 +141,13 @@ def cleanup_cache():
 
 atexit.register(cleanup_cache)
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+@st.cache_resource
+def get_chat_summarizer():
+    summarizer = pipeline("summarization", device=device, model="facebook/bart-large-cnn")
+    return summarizer
+
 # Streamlit App
 st.title("RAG System with Handwritten Notes Support")
 
@@ -155,7 +164,7 @@ if 'retriever' not in st.session_state:
 if 'uploaded_files' not in st.session_state:
     st.session_state.uploaded_files = set()
 if 'conversation_memory' not in st.session_state:
-    st.session_state.conversation_memory = []
+    st.session_state.conversation_memory = [] 
 
 # Process uploaded files
 if uploaded_note_file:
@@ -207,10 +216,6 @@ if st.session_state.retriever:
         with st.spinner("Retrieving context and generating response..."):
             retrieved_context = st.session_state.retriever.retrieve(user_query)
             context_text = "\n".join([doc.text for doc in retrieved_context])
-            prompt_messages = [
-                ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes."),
-                ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{user_query}"),
-            ]
             answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
             st.session_state.conversation_memory.append({"assistant": answer})
 
