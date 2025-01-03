@@ -209,10 +209,6 @@ if uploaded_note_file:
             st.sidebar.success("File processed and indexed.")
 
 def recontextualize_query(user_query, conversation_memory):
-    """
-    Use Gemini model to recontextualize the user query by incorporating conversation history 
-    and retrieved context to remove ambiguities and references.
-    """
     # Prepare context from history and retrieved documents
     history_context = "\n".join(
         [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
@@ -246,7 +242,7 @@ if st.session_state.retriever:
             retrieved_context = st.session_state.retriever.retrieve(user_query)
             
             # Recontextualize user query
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, retrieved_context)
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
