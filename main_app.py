@@ -104,7 +104,6 @@ def process_and_index_data(directory, embedder):
         st.sidebar.error(f"Error building knowledge base: {e}")
         return None
 
-
 def update_vector_store(vector_store, new_documents, embedder):
     try:
         nodes = process_documents_in_parallel(new_documents, splitter)

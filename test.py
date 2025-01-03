@@ -16,6 +16,7 @@ from llama_index.tools.tavily_research import TavilyToolSpec
 from tavily import TavilyClient
 from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
 import pickle
 from concurrent.futures import ThreadPoolExecutor
@@ -207,16 +208,53 @@ if uploaded_note_file:
             st.session_state.uploaded_files.add(uploaded_note_file.name)
             st.sidebar.success("File processed and indexed.")
 
+def recontextualize_query(user_query, conversation_memory):
+    """
+    Use Gemini model to recontextualize the user query by incorporating conversation history 
+    and retrieved context to remove ambiguities and references.
+    """
+    # Prepare context from history and retrieved documents
+    history_context = "\n".join(
+        [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
+    )
+    
+    # Input prompt for recontextualization
+    prompt = (
+        f"""The following is the conversation history and relevant information from uploaded files:
+        ---
+        Conversation History:\n{history_context}
+        ---
+        User Query: {user_query}
+        ---
+        Recontextualize the user's query to make it clear, self-contained, and unambiguous."""
+    )
+    
+    # Generate recontextualized query
+    response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
+    recontextualized_query = response.message.content
+    
+    return recontextualized_query
+
 # Chat-based query interface
 if st.session_state.retriever:
     user_query = st.text_input("Ask a question based on the uploaded notes:")
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        with st.spinner("Retrieving context and generating response..."):
+        with st.spinner("Recontextualizing your query..."):
+            # Retrieve context
             retrieved_context = st.session_state.retriever.retrieve(user_query)
-            context_text = "\n".join([doc.text for doc in retrieved_context])
-            answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
+            
+            # Recontextualize user query
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, retrieved_context)
+            st.sidebar.success("Query recontextualized.")
+
+        with st.spinner("Generating response..."):
+            # Get response from agent
+            answer = agent.chat(message=f"""Context:
+                                {' '.join([doc.text for doc in retrieved_context])}
+                                Question:
+                                {recontextualized_query}""").response
             st.session_state.conversation_memory.append({"assistant": answer})
 
     # Display chat-like UI
