@@ -65,7 +65,6 @@ mul_tool = FunctionTool.from_defaults(fn=mul_integers)
 search_tool = FunctionTool.from_defaults(fn=web_search)
 
 buffer = ChatMemoryBuffer(token_limit=10000)
-# agent = ReActAgent.from_tools(tools=tavily_tool_list, llm=gemini_model, memory=buffer)  # Initialize ReActAgent
 agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, search_tool], llm=gemini_model, memory=buffer)
 
 # Caching utilities
