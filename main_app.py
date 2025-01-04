@@ -5,14 +5,18 @@ import atexit
 import streamlit as st
 from PIL import Image
 import fitz
+import torch
+from transformers import pipeline
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
-from llama_index.core.llms import ChatMessage
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from llama_index.tools.tavily_research import TavilyToolSpec
+from tavily import TavilyClient
+from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
 import pickle
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 CACHE_DIR = "./cache"
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
+
 os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -40,8 +45,27 @@ tavily_api_key = "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"
 tavily_tool = TavilyToolSpec(api_key=tavily_api_key)
 tavily_tool_list = tavily_tool.to_tool_list()
 
+tavily_cli = TavilyClient(api_key=tavily_api_key)
+
+def web_search(query: str) -> str:
+    """Function to search the web and obtain information using a search query"""
+    results = tavily_cli.search(query=query)
+    return results
+
+def mul_integers(a: int, b: int) -> int:
+    """Function to multiply 2 integers and return an integer"""
+    return a * b
+
+def add_integers(a: int, b: int) -> int:
+    """Function to add 2 integers and return an integer"""
+    return a + b
+
+add_tool = FunctionTool.from_defaults(fn=add_integers)
+mul_tool = FunctionTool.from_defaults(fn=mul_integers)
+search_tool = FunctionTool.from_defaults(fn=web_search)
+
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=tavily_tool_list, llm=gemini_model, memory=buffer)  # Initialize ReActAgent
+agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, search_tool], llm=gemini_model, memory=buffer)
 
 # Caching utilities
 def cache_file(file_path):
@@ -84,9 +108,7 @@ def extract_text_with_easyocr(image):
 # Parallel text splitting
 def process_documents_in_parallel(documents, splitter):
     with ThreadPoolExecutor(max_workers=4) as executor:
-        # Split each document's text into chunks
         split_results = executor.map(lambda doc: splitter.split_text(doc.text), documents)
-    # Flatten the results
     return [chunk for chunks in split_results for chunk in chunks]
 
 # Build or update vector store
@@ -94,11 +116,9 @@ def process_and_index_data(directory, embedder):
     try:
         reader = SimpleDirectoryReader(directory)
         documents = reader.load_data()
-        # Split the documents into chunks
         chunks = process_documents_in_parallel(documents, splitter)
-        # Create Document objects from chunks
         document_chunks = [Document(text=chunk) for chunk in chunks]
-        # Build the vector store index
+
         return VectorStoreIndex.from_documents(documents=document_chunks, embed_model=embedder)
     except Exception as e:
         st.sidebar.error(f"Error building knowledge base: {e}")
@@ -121,6 +141,43 @@ def cleanup_cache():
 
 atexit.register(cleanup_cache)
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+@st.cache_resource
+def get_chat_summarizer():
+    summarizer = pipeline("summarization", device=device, model="facebook/bart-large-cnn")
+    return summarizer
+
+# Import additional libraries
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer
+import spacy
+
+# Load models for question generation
+question_generator = pipeline("text2text-generation", model="t5-small")
+sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
+nlp = spacy.load("en_core_web_sm")
+
+def extract_key_sentences(text, top_n=5):
+    """Extract top N key sentences based on embeddings."""
+    doc = nlp(text)
+    sentences = [sent.text for sent in doc.sents]
+    embeddings = sentence_embedder.encode(sentences)
+    doc_embedding = embeddings.mean(axis=0)
+    similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
+    ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
+    return ranked_sentences[:top_n]
+
+def generate_questions(text, num_questions=5):
+    """Generate questions from text."""
+    key_sentences = extract_key_sentences(text, top_n=num_questions)
+    questions = []
+    for sentence in key_sentences:
+        q = question_generator(f"generate question: {sentence}", max_length=50, num_return_sequences=1)
+        questions.append(q[0]['generated_text'])
+    return questions
+
+
 # Streamlit App
 st.title("RAG System with Handwritten Notes Support")
 
@@ -128,6 +185,10 @@ st.title("RAG System with Handwritten Notes Support")
 with st.sidebar:
     st.header("File Uploads")
     uploaded_note_file = st.file_uploader("Upload PDFs or images", type=['pdf', 'png', 'jpg', 'jpeg'])
+
+    st.header("Question Generation")
+    enable_question_generation = st.checkbox("Enable Question Generation", value=False)
+    num_questions = st.slider("Number of Questions", min_value=1, max_value=10, value=5)
 
 # Session state
 if 'vector_store' not in st.session_state:
@@ -137,7 +198,7 @@ if 'retriever' not in st.session_state:
 if 'uploaded_files' not in st.session_state:
     st.session_state.uploaded_files = set()
 if 'conversation_memory' not in st.session_state:
-    st.session_state.conversation_memory = []
+    st.session_state.conversation_memory = [] 
 
 # Process uploaded files
 if uploaded_note_file:
@@ -148,50 +209,92 @@ if uploaded_note_file:
         f.write(uploaded_note_file.getbuffer())
 
     if uploaded_note_file.name not in st.session_state.uploaded_files:
-        st.sidebar.info("Processing file...")
-        extracted_text = ""
+        with st.spinner("Processing file..."):
+            extracted_text = ""
 
-        if uploaded_note_file.name.lower().endswith(".pdf"):
-            images = extract_images_from_pdf(temp_note_file_path)
-            extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
-        else:
-            image = Image.open(temp_note_file_path)
-            extracted_text = extract_text_with_easyocr(image)
+            if uploaded_note_file.name.lower().endswith(".pdf"):
+                with st.spinner("Extracting images from PDF..."):
+                    images = extract_images_from_pdf(temp_note_file_path)
+                with st.spinner("Performing OCR on extracted images..."):
+                    extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
+            else:
+                with st.spinner("Performing OCR on the uploaded image..."):
+                    image = Image.open(temp_note_file_path)
+                    extracted_text = extract_text_with_easyocr(image)
 
-        text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
-        with open(text_file_path, "w") as f:
-            f.write(extracted_text)
+            with st.spinner("Saving extracted text to file..."):
+                text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
+                with open(text_file_path, "w") as f:
+                    f.write(extracted_text)
 
-        if st.session_state.vector_store:
-            st.session_state.vector_store = update_vector_store(
-                st.session_state.vector_store,
-                [Document(**{'text': extracted_text})],
-                embedder
-            )
-        else:
-            st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
+            with st.spinner("Indexing text into the knowledge base..."):
+                if st.session_state.vector_store:
+                    st.session_state.vector_store = update_vector_store(
+                        st.session_state.vector_store,
+                        [Document(**{'text': extracted_text})],
+                        embedder
+                    )
+                else:
+                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
 
-        st.session_state.retriever = st.session_state.vector_store.as_retriever()
-        st.session_state.uploaded_files.add(uploaded_note_file.name)
-        st.sidebar.success("File processed and indexed.")
+            st.session_state.retriever = st.session_state.vector_store.as_retriever()
+            st.session_state.uploaded_files.add(uploaded_note_file.name)
+            st.sidebar.success("File processed and indexed.")
+    # Generate questions after file processing
+    if uploaded_note_file and enable_question_generation:
+        with st.spinner("Generating questions from the uploaded content..."):
+            questions = generate_questions(extracted_text, num_questions=num_questions)
+            st.sidebar.success("Questions generated successfully!")
+
+        st.header("Generated Questions")
+        for i, question in enumerate(questions, 1):
+            st.write(f"**Q{i}:** {question}")
+
+def recontextualize_query(user_query, conversation_memory):
+    # Prepare context from history and retrieved documents
+    history_context = "\n".join(
+        [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
+    )
+    
+    # Input prompt for recontextualization
+    prompt = (
+        f"""The following is the conversation history and relevant information from uploaded files:
+        ---
+        Conversation History:\n{history_context}
+        ---
+        User Query: {user_query}
+        ---
+        Recontextualize the user's query to make it clear, self-contained, and unambiguous."""
+    )
+    
+    # Generate recontextualized query
+    response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
+    recontextualized_query = response.message.content
+    
+    return recontextualized_query
 
 # Chat-based query interface
 if st.session_state.retriever:
-    user_query = st.text_input("Ask a question based on the uploaded notes:")
+    user_query = st.chat_input("Ask a question based on the uploaded notes:")
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        retrieved_context = st.session_state.retriever.retrieve(user_query)
-        context_text = "\n".join([doc.text for doc in retrieved_context])
-        prompt_messages = [
-            ChatMessage(role="system", content="You are an AI assistant helping with handwritten notes."),
-            ChatMessage(role="user", content=f"Context:\n{context_text}\n\nQuestion:\n{user_query}"),
-        ]
-        answer = agent.chat(message=f"Context:\n{context_text}\n\nQuestion:\n{user_query}").response
-        st.session_state.conversation_memory.append({"assistant": answer})
+        with st.spinner("Recontextualizing your query..."):
+            # Retrieve context
+            retrieved_context = st.session_state.retriever.retrieve(user_query)
+            
+            # Recontextualize user query
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)
+            st.sidebar.success("Query recontextualized.")
 
-    # Display chat-like UI
-    st.write("Conversation:")
+        with st.spinner("Generating response..."):
+            # Get response from agent
+            answer = agent.chat(message=f"""Context:
+                                {' '.join([doc.text for doc in retrieved_context])}
+                                Question:
+                                {recontextualized_query}""").response
+            st.session_state.conversation_memory.append({"assistant": answer})
+
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
             with st.chat_message(role):

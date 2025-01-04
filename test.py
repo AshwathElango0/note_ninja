@@ -237,7 +237,7 @@ if uploaded_note_file:
                 else:
                     st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
 
-            st.session_state.retriever = st.session_state.vector_store.as_retriever()
+            st.session_state.retriever = st.session_state.vector_store.as_retriever(similarity_top_k=2, vector_store_query_mode='mmr')
             st.session_state.uploaded_files.add(uploaded_note_file.name)
             st.sidebar.success("File processed and indexed.")
     # Generate questions after file processing
