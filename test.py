@@ -148,6 +148,36 @@ def get_chat_summarizer():
     summarizer = pipeline("summarization", device=device, model="facebook/bart-large-cnn")
     return summarizer
 
+# Import additional libraries
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer
+import spacy
+
+# Load models for question generation
+question_generator = pipeline("text2text-generation", model="t5-small")
+sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
+nlp = spacy.load("en_core_web_sm")
+
+def extract_key_sentences(text, top_n=5):
+    """Extract top N key sentences based on embeddings."""
+    doc = nlp(text)
+    sentences = [sent.text for sent in doc.sents]
+    embeddings = sentence_embedder.encode(sentences)
+    doc_embedding = embeddings.mean(axis=0)
+    similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
+    ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
+    return ranked_sentences[:top_n]
+
+def generate_questions(text, num_questions=5):
+    """Generate questions from text."""
+    key_sentences = extract_key_sentences(text, top_n=num_questions)
+    questions = []
+    for sentence in key_sentences:
+        q = question_generator(f"generate question: {sentence}", max_length=50, num_return_sequences=1)
+        questions.append(q[0]['generated_text'])
+    return questions
+
+
 # Streamlit App
 st.title("RAG System with Handwritten Notes Support")
 
@@ -155,6 +185,10 @@ st.title("RAG System with Handwritten Notes Support")
 with st.sidebar:
     st.header("File Uploads")
     uploaded_note_file = st.file_uploader("Upload PDFs or images", type=['pdf', 'png', 'jpg', 'jpeg'])
+
+    st.header("Question Generation")
+    enable_question_generation = st.checkbox("Enable Question Generation", value=False)
+    num_questions = st.slider("Number of Questions", min_value=1, max_value=10, value=5)
 
 # Session state
 if 'vector_store' not in st.session_state:
@@ -206,6 +240,15 @@ if uploaded_note_file:
             st.session_state.retriever = st.session_state.vector_store.as_retriever()
             st.session_state.uploaded_files.add(uploaded_note_file.name)
             st.sidebar.success("File processed and indexed.")
+    # Generate questions after file processing
+    if uploaded_note_file and enable_question_generation:
+        with st.spinner("Generating questions from the uploaded content..."):
+            questions = generate_questions(extracted_text, num_questions=num_questions)
+            st.sidebar.success("Questions generated successfully!")
+
+        st.header("Generated Questions")
+        for i, question in enumerate(questions, 1):
+            st.write(f"**Q{i}:** {question}")
 
 def recontextualize_query(user_query, conversation_memory):
     # Prepare context from history and retrieved documents
@@ -232,7 +275,7 @@ def recontextualize_query(user_query, conversation_memory):
 
 # Chat-based query interface
 if st.session_state.retriever:
-    user_query = st.text_input("Ask a question based on the uploaded notes:")
+    user_query = st.chat_input("Ask a question based on the uploaded notes:")
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
@@ -252,8 +295,6 @@ if st.session_state.retriever:
                                 {recontextualized_query}""").response
             st.session_state.conversation_memory.append({"assistant": answer})
 
-    # Display chat-like UI
-    st.write("Conversation:")
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
             with st.chat_message(role):
