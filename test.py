@@ -23,14 +23,16 @@ import numpy as np
 import pickle
 from concurrent.futures import ThreadPoolExecutor
 
-# Constants
-CACHE_DIR = "./cache"
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
 
-os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+
+def cleanup_temp():
+    shutil.rmtree(TEMP_DIR)
+
+atexit.register(cleanup_temp)
 
 # Set up API key for Gemini embedding
 google_api_key = "AIzaSyAw786vp_FhAWxi9vce2IoHon53sGxeCdk"
@@ -68,20 +70,6 @@ search_tool = FunctionTool.from_defaults(fn=web_search)
 
 buffer = ChatMemoryBuffer(token_limit=10000)
 agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, search_tool], llm=gemini_model, memory=buffer)
-
-# Caching utilities
-def cache_file(file_path):
-    return os.path.join(CACHE_DIR, os.path.basename(file_path))
-
-def save_to_cache(obj, cache_path):
-    with open(cache_path, 'wb') as cache_file:
-        pickle.dump(obj, cache_file)
-
-def load_from_cache(cache_path):
-    if os.path.exists(cache_path):
-        with open(cache_path, 'rb') as cache_file:
-            return pickle.load(cache_file)
-    return None
 
 # Extract images from PDF pages using PyMuPDF
 def extract_images_from_pdf(pdf_path):
@@ -136,13 +124,6 @@ def update_vector_store(vector_store, new_documents, embedder):
         st.sidebar.error(f"Error updating knowledge base: {e}")
         return vector_store
 
-# Cleanup cache on exit
-def cleanup_cache():
-    if os.path.exists(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
-
-atexit.register(cleanup_cache)
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load models for question generation
@@ -189,7 +170,9 @@ if 'retriever' not in st.session_state:
 if 'uploaded_files' not in st.session_state:
     st.session_state.uploaded_files = set()
 if 'conversation_memory' not in st.session_state:
-    st.session_state.conversation_memory = [] 
+    st.session_state.conversation_memory = []
+if 'extracted_text' not in st.session_state:
+    st.session_state.extracted_text = ''
 
 # Process uploaded files
 if uploaded_note_file:
@@ -198,7 +181,6 @@ if uploaded_note_file:
     # Save file locally
     with open(temp_note_file_path, "wb") as f:
         f.write(uploaded_note_file.getbuffer())
-
     if uploaded_note_file.name not in st.session_state.uploaded_files:
         with st.spinner("Processing file..."):
             extracted_text = ""
@@ -212,6 +194,8 @@ if uploaded_note_file:
                 with st.spinner("Performing OCR on the uploaded image..."):
                     image = Image.open(temp_note_file_path)
                     extracted_text = extract_text_with_easyocr(image)
+
+            st.session_state.extracted_text = extracted_text
 
             with st.spinner("Saving extracted text to file..."):
                 text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
@@ -241,7 +225,7 @@ if uploaded_note_file:
         for i, question in enumerate(questions, 1):
             st.write(f"**Q{i}:** {question}")
 
-def recontextualize_query(user_query, conversation_memory):
+def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
     history_context = "\n".join(
         [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
@@ -255,7 +239,10 @@ def recontextualize_query(user_query, conversation_memory):
         ---
         User Query: {user_query}
         ---
-        Recontextualize the user's query to make it clear, self-contained, and unambiguous."""
+        Contents of Document Uploaded by User:\n{extracted_text}
+        If the user asks a query which needs their document to be understood recontextualize the query using the contents of the document provided above.
+        Recontextualize the user's query to make it clear, self-contained, and unambiguous.
+        """
     )
     
     # Generate recontextualized query
@@ -274,7 +261,7 @@ if st.session_state.retriever:
             retrieved_context = st.session_state.retriever.retrieve(user_query)
             retrieved_context = [doc for doc in retrieved_context if doc.score >= 0.75]
             
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)    # Recontextualize user query
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
