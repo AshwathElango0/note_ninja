@@ -20,7 +20,6 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
-import pickle
 from concurrent.futures import ThreadPoolExecutor
 
 TEMP_DIR = "./temp"
