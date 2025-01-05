@@ -7,6 +7,8 @@ from PIL import Image
 import fitz
 import torch
 from transformers import pipeline
+from sentence_transformers import SentenceTransformer
+import spacy
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
@@ -143,16 +145,6 @@ atexit.register(cleanup_cache)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-@st.cache_resource
-def get_chat_summarizer():
-    summarizer = pipeline("summarization", device=device, model="facebook/bart-large-cnn")
-    return summarizer
-
-# Import additional libraries
-from transformers import pipeline
-from sentence_transformers import SentenceTransformer
-import spacy
-
 # Load models for question generation
 question_generator = pipeline("text2text-generation", model="t5-small")
 sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
@@ -176,7 +168,6 @@ def generate_questions(text, num_questions=5):
         q = question_generator(f"generate question: {sentence}", max_length=50, num_return_sequences=1)
         questions.append(q[0]['generated_text'])
     return questions
-
 
 # Streamlit App
 st.title("RAG System with Handwritten Notes Support")
@@ -280,11 +271,10 @@ if st.session_state.retriever:
         st.session_state.conversation_memory.append({"user": user_query})
 
         with st.spinner("Recontextualizing your query..."):
-            # Retrieve context
             retrieved_context = st.session_state.retriever.retrieve(user_query)
+            retrieved_context = [doc for doc in retrieved_context if doc.score >= 0.75]
             
-            # Recontextualize user query
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)    # Recontextualize user query
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
