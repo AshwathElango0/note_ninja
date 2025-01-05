@@ -151,16 +151,24 @@ def generate_questions(text, num_questions=5):
     return questions
 
 # Streamlit App
-st.title("RAG System with Handwritten Notes Support")
+st.title("Note Ninja")
 
 # Sidebar
 with st.sidebar:
-    st.header("File Uploads")
+    st.header("Control Panel")
+    
+    # File Upload Section
+    st.subheader("File Uploads")
     uploaded_note_file = st.file_uploader("Upload PDFs or images", type=['pdf', 'png', 'jpg', 'jpeg'])
 
-    st.header("Question Generation")
+    # Features & Toggles
+    st.subheader("Features")
+    enable_semantic_search = st.checkbox("Enable Semantic Search", value=True)
     enable_question_generation = st.checkbox("Enable Question Generation", value=False)
-    num_questions = st.slider("Number of Questions", min_value=1, max_value=10, value=5)
+
+    # Settings Section
+    st.subheader("Settings")
+    num_questions = st.slider("Number of Questions", min_value=1, max_value=5, value=2, step=1)
 
 # Session state
 if 'vector_store' not in st.session_state:
@@ -224,6 +232,9 @@ if uploaded_note_file:
         st.header("Generated Questions")
         for i, question in enumerate(questions, 1):
             st.write(f"**Q{i}:** {question}")
+
+st.subheader("Search Your Notes")
+user_search_query = st.text_input("Search for information in your uploaded notes:", placeholder="Type your search query here...")
 
 def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
