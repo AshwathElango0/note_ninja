@@ -3,8 +3,6 @@ import easyocr
 import shutil
 import atexit
 import streamlit as st
-from PIL import Image
-import fitz
 import torch
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
@@ -22,6 +20,8 @@ from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from transformers import T5ForConditionalGeneration, T5Tokenizer
+from ocr_utils import extract_images_from_pdf, extract_text_with_easyocr
+from tools import mul_integers, add_integers, div_integers
 
 @st.cache_resource
 def load_qa_maker():
@@ -59,27 +59,12 @@ splitter = TokenTextSplitter(chunk_size=250, chunk_overlap=50)
 reader = easyocr.Reader(['en'])  # EasyOCR Reader
 
 tavily_api_key = "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"
-tavily_tool = TavilyToolSpec(api_key=tavily_api_key)
-tavily_tool_list = tavily_tool.to_tool_list()
-
 tavily_cli = TavilyClient(api_key=tavily_api_key)
 
 def web_search(query: str) -> str:
     """Function to search the web and obtain information using a search query"""
     results = tavily_cli.search(query=query)
     return results
-
-def mul_integers(a: int, b: int) -> int:
-    """Function to multiply 2 integers and return an integer"""
-    return a * b
-
-def add_integers(a: int, b: int) -> int:
-    """Function to add 2 integers and return an integer"""
-    return a + b
-
-def div_integers(a: int, b: int) -> float:
-    """Function to add 2 integers and return a float"""
-    return a / b
 
 add_tool = FunctionTool.from_defaults(fn=add_integers)
 mul_tool = FunctionTool.from_defaults(fn=mul_integers)
@@ -88,30 +73,6 @@ search_tool = FunctionTool.from_defaults(fn=web_search)
 
 buffer = ChatMemoryBuffer(token_limit=10000)
 agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, div_tool, search_tool], llm=gemini_model, memory=buffer)
-
-# Extract images from PDF pages using PyMuPDF
-def extract_images_from_pdf(pdf_path):
-    try:
-        doc = fitz.open(pdf_path)
-        images = []
-        for page_num in range(len(doc)):
-            pix = doc[page_num].get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
-        return images
-    except Exception as e:
-        st.sidebar.error(f"Error extracting images from PDF: {e}")
-        return []
-
-# EasyOCR text extraction
-def extract_text_with_easyocr(image):
-    try:
-        image_np = np.array(image)  # Convert PIL image to NumPy array
-        result = reader.readtext(image_np)
-        return " ".join([text[1] for text in result]).strip()
-    except Exception as e:
-        st.sidebar.error(f"Error during EasyOCR text extraction: {e}")
-        return ""
 
 # Parallel text splitting
 def process_documents_in_parallel(documents, splitter):
@@ -215,11 +176,10 @@ if uploaded_note_file:
                 with st.spinner("Extracting images from PDF..."):
                     images = extract_images_from_pdf(temp_note_file_path)
                 with st.spinner("Performing OCR on extracted images..."):
-                    extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
+                    extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
             else:
                 with st.spinner("Performing OCR on the uploaded image..."):
-                    image = Image.open(temp_note_file_path)
-                    extracted_text = extract_text_with_easyocr(image)
+                    extracted_text = extract_text_with_easyocr(temp_note_file_path, reader)
 
             st.session_state.extracted_text = extracted_text
 
@@ -285,7 +245,9 @@ def recontextualize_query(user_query, conversation_memory, extracted_text=''):
         ---
         Contents of Document Uploaded by User:\n{extracted_text}
         If the user asks a query which needs their document to be understood recontextualize the query using the contents of the document provided above.
-        Recontextualize the user's query to make it clear, self-contained, and unambiguous.
+        The user may refer to a document(for example, they may refer to notes or PDFs or reports, whose content(if any) is provided to you)
+        Recontextualize the user's query to make it clear, self-contained, and unambiguous, and return this contextualized query.
+        There is no need to answer it.
         """
     )
     
@@ -310,7 +272,9 @@ if st.session_state.retriever:
 
         with st.spinner("Generating response..."):
             # Get response from agent
-            answer = agent.chat(message=f"""Context:
+            answer = agent.chat(message=f"""
+                                Answer the question with the context provided, to the best of your ability.
+                                Context:
                                 {' '.join(retrieved_context)}
                                 Question:
                                 {recontextualized_query}""").response

@@ -7,6 +7,8 @@ from PIL import Image
 import fitz
 import torch
 from transformers import pipeline
+from sentence_transformers import SentenceTransformer
+import spacy
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
@@ -18,17 +20,32 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
-import pickle
 from concurrent.futures import ThreadPoolExecutor
+from transformers import T5ForConditionalGeneration, T5Tokenizer
 
-# Constants
-CACHE_DIR = "./cache"
+@st.cache_resource
+def load_qa_maker():
+    model_name = "allenai/t5-small-squad2-question-generation"
+    tokenizer = T5Tokenizer.from_pretrained(model_name)
+    model = T5ForConditionalGeneration.from_pretrained(model_name)
+    return tokenizer, model
+
+def run_model(tokenizer, model, input_string, **generator_args):
+    input_ids = tokenizer.encode(input_string, return_tensors="pt")
+    res = model.generate(input_ids, **generator_args)
+    output = tokenizer.batch_decode(res, skip_special_tokens=True)
+    return output
+
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
 
-os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+
+def cleanup_temp():
+    shutil.rmtree(TEMP_DIR)
+
+atexit.register(cleanup_temp)
 
 # Set up API key for Gemini embedding
 google_api_key = "AIzaSyAw786vp_FhAWxi9vce2IoHon53sGxeCdk"
@@ -60,26 +77,17 @@ def add_integers(a: int, b: int) -> int:
     """Function to add 2 integers and return an integer"""
     return a + b
 
+def div_integers(a: int, b: int) -> float:
+    """Function to add 2 integers and return a float"""
+    return a / b
+
 add_tool = FunctionTool.from_defaults(fn=add_integers)
 mul_tool = FunctionTool.from_defaults(fn=mul_integers)
+div_tool = FunctionTool.from_defaults(fn=div_integers)
 search_tool = FunctionTool.from_defaults(fn=web_search)
 
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, search_tool], llm=gemini_model, memory=buffer)
-
-# Caching utilities
-def cache_file(file_path):
-    return os.path.join(CACHE_DIR, os.path.basename(file_path))
-
-def save_to_cache(obj, cache_path):
-    with open(cache_path, 'wb') as cache_file:
-        pickle.dump(obj, cache_file)
-
-def load_from_cache(cache_path):
-    if os.path.exists(cache_path):
-        with open(cache_path, 'rb') as cache_file:
-            return pickle.load(cache_file)
-    return None
+agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, div_tool, search_tool], llm=gemini_model, memory=buffer)
 
 # Extract images from PDF pages using PyMuPDF
 def extract_images_from_pdf(pdf_path):
@@ -134,27 +142,8 @@ def update_vector_store(vector_store, new_documents, embedder):
         st.sidebar.error(f"Error updating knowledge base: {e}")
         return vector_store
 
-# Cleanup cache on exit
-def cleanup_cache():
-    if os.path.exists(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
-
-atexit.register(cleanup_cache)
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-@st.cache_resource
-def get_chat_summarizer():
-    summarizer = pipeline("summarization", device=device, model="facebook/bart-large-cnn")
-    return summarizer
-
-# Import additional libraries
-from transformers import pipeline
-from sentence_transformers import SentenceTransformer
-import spacy
-
-# Load models for question generation
-question_generator = pipeline("text2text-generation", model="t5-small")
 sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
 nlp = spacy.load("en_core_web_sm")
 
@@ -168,27 +157,36 @@ def extract_key_sentences(text, top_n=5):
     ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
     return ranked_sentences[:top_n]
 
-def generate_questions(text, num_questions=5):
-    """Generate questions from text."""
+def alt_gen_questions(text, num_questions):
+    """Generate questions from text"""
+    tokenizer, model = load_qa_maker()
     key_sentences = extract_key_sentences(text, top_n=num_questions)
     questions = []
     for sentence in key_sentences:
-        q = question_generator(f"generate question: {sentence}", max_length=50, num_return_sequences=1)
-        questions.append(q[0]['generated_text'])
+        question = run_model(tokenizer=tokenizer, model=model, input_string=sentence)
+        questions.append(question[0])
+    
     return questions
 
-
 # Streamlit App
-st.title("RAG System with Handwritten Notes Support")
+st.title("Note Ninja")
 
 # Sidebar
 with st.sidebar:
-    st.header("File Uploads")
+    st.header("Control Panel")
+    
+    # File Upload Section
+    st.subheader("File Uploads")
     uploaded_note_file = st.file_uploader("Upload PDFs or images", type=['pdf', 'png', 'jpg', 'jpeg'])
 
-    st.header("Question Generation")
+    # Features & Toggles
+    st.subheader("Features")
+    enable_semantic_search = st.checkbox("Enable Semantic Search", value=True)
     enable_question_generation = st.checkbox("Enable Question Generation", value=False)
-    num_questions = st.slider("Number of Questions", min_value=1, max_value=10, value=5)
+
+    # Settings Section
+    st.subheader("Settings")
+    num_questions = st.slider("Number of Questions", min_value=1, max_value=5, value=2, step=1)
 
 # Session state
 if 'vector_store' not in st.session_state:
@@ -198,7 +196,9 @@ if 'retriever' not in st.session_state:
 if 'uploaded_files' not in st.session_state:
     st.session_state.uploaded_files = set()
 if 'conversation_memory' not in st.session_state:
-    st.session_state.conversation_memory = [] 
+    st.session_state.conversation_memory = []
+if 'extracted_text' not in st.session_state:
+    st.session_state.extracted_text = ''
 
 # Process uploaded files
 if uploaded_note_file:
@@ -207,7 +207,6 @@ if uploaded_note_file:
     # Save file locally
     with open(temp_note_file_path, "wb") as f:
         f.write(uploaded_note_file.getbuffer())
-
     if uploaded_note_file.name not in st.session_state.uploaded_files:
         with st.spinner("Processing file..."):
             extracted_text = ""
@@ -221,6 +220,8 @@ if uploaded_note_file:
                 with st.spinner("Performing OCR on the uploaded image..."):
                     image = Image.open(temp_note_file_path)
                     extracted_text = extract_text_with_easyocr(image)
+
+            st.session_state.extracted_text = extracted_text
 
             with st.spinner("Saving extracted text to file..."):
                 text_file_path = os.path.join(DATA_DIR, f"{uploaded_note_file.name}.txt")
@@ -237,20 +238,38 @@ if uploaded_note_file:
                 else:
                     st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
 
-            st.session_state.retriever = st.session_state.vector_store.as_retriever()
+            st.session_state.retriever = st.session_state.vector_store.as_retriever(similarity_top_k=2, vector_store_query_mode='mmr')
             st.session_state.uploaded_files.add(uploaded_note_file.name)
             st.sidebar.success("File processed and indexed.")
     # Generate questions after file processing
     if uploaded_note_file and enable_question_generation:
         with st.spinner("Generating questions from the uploaded content..."):
-            questions = generate_questions(extracted_text, num_questions=num_questions)
+            questions = alt_gen_questions(extracted_text, num_questions=num_questions)
             st.sidebar.success("Questions generated successfully!")
 
         st.header("Generated Questions")
         for i, question in enumerate(questions, 1):
             st.write(f"**Q{i}:** {question}")
 
-def recontextualize_query(user_query, conversation_memory):
+with st.sidebar:
+    st.subheader("Semantic Search")
+    user_search_query = st.text_input("Search your notes:", placeholder="Type your search query here...")
+    if user_search_query:
+        with st.spinner("Searching for relevant sections..."):
+            retrieved_context = st.session_state.retriever.retrieve(user_search_query)
+            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.0]
+        
+        st.subheader("Search Results")
+        if retrieved_context:
+            for idx, context in enumerate(retrieved_context, start=1):
+                st.markdown(f"#### Result {idx}")
+                st.write(context)
+                st.markdown("---")
+        else:
+            st.info("No relevant sections found.")
+
+
+def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
     history_context = "\n".join(
         [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
@@ -264,7 +283,10 @@ def recontextualize_query(user_query, conversation_memory):
         ---
         User Query: {user_query}
         ---
-        Recontextualize the user's query to make it clear, self-contained, and unambiguous."""
+        Contents of Document Uploaded by User:\n{extracted_text}
+        If the user asks a query which needs their document to be understood recontextualize the query using the contents of the document provided above.
+        Recontextualize the user's query to make it clear, self-contained, and unambiguous.
+        """
     )
     
     # Generate recontextualized query
@@ -280,17 +302,16 @@ if st.session_state.retriever:
         st.session_state.conversation_memory.append({"user": user_query})
 
         with st.spinner("Recontextualizing your query..."):
-            # Retrieve context
             retrieved_context = st.session_state.retriever.retrieve(user_query)
+            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
             
-            # Recontextualize user query
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory)
+            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
             # Get response from agent
             answer = agent.chat(message=f"""Context:
-                                {' '.join([doc.text for doc in retrieved_context])}
+                                {' '.join(retrieved_context)}
                                 Question:
                                 {recontextualized_query}""").response
             st.session_state.conversation_memory.append({"assistant": answer})
