@@ -4,6 +4,7 @@ import shutil
 import atexit
 import streamlit as st
 import torch
+import numpy as np
 from transformers import pipeline, T5ForConditionalGeneration, T5Tokenizer
 from sentence_transformers import SentenceTransformer
 import spacy
@@ -12,11 +13,8 @@ from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import Document
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
-from tavily import TavilyClient
-from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage, MessageRole
-import numpy as np
 from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
 from tools import return_tool_list
 from prompts import agent_prompt, reformulation_prompt
