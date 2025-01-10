@@ -19,6 +19,7 @@ from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
 from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
 from tools import return_tool_list
+from prompts import agent_prompt, reformulation_prompt
 
 @st.cache_resource
 def load_qa_maker():
@@ -55,18 +56,8 @@ embedder = GeminiEmbedding(model_name="models/embedding-001")
 splitter = TokenTextSplitter(chunk_size=250, chunk_overlap=50)
 reader = easyocr.Reader(['en'])  # EasyOCR Reader
 
-tavily_api_key = "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"
-tavily_cli = TavilyClient(api_key=tavily_api_key)
-
-def web_search(query: str) -> str:
-    """Function to search the web and obtain information using a search query"""
-    results = tavily_cli.search(query=query)
-    return results
-
 tool_list = return_tool_list()
 
-search_tool = FunctionTool.from_defaults(fn=web_search)
-tool_list.append(search_tool)
 buffer = ChatMemoryBuffer(token_limit=10000)
 agent = ReActAgent.from_tools(tools=tool_list, llm=gemini_model, memory=buffer)
 
@@ -199,33 +190,14 @@ with st.sidebar:
 
 def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
-    history_context = "\n".join(
-        [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
-    )
+    history_context = "\n".join([f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()])
     
-    # Input prompt for recontextualization
-    prompt = (
-        f"""You are assisting a user with their queries based on the following:
-        ---
-        Conversation History:\n{history_context}
-        ---
-        Extracted Content from User's Uploaded Document:\n{extracted_text if extracted_text.strip() else "No content extracted or uploaded."}
-        ---
-        The user asked: "{user_query}"
-        
-        Your task:
-        1. Recontextualize this query to make it self-contained and unambiguous.
-        2. Keep the recontextualized query in the user's voice and perspective.
-        3. Do not frame the query from your perspective or imply that the user is asking for clarification about the document.
-
-        Return the recontextualized query as if the user is directly asking it.
-        """
-    )
+    prompt = reformulation_prompt.format(history_context=history_context, extracted_text=extracted_text if extracted_text.strip() else "No content extracted or uploaded.", user_query=user_query)
     
     # Generate recontextualized query
     response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
     recontextualized_query = response.message.content
-    
+
     return recontextualized_query
 
 # Chat-based query interface
@@ -250,26 +222,11 @@ if st.session_state.retriever:
             else:
                 context = "No relevant context was provided."
 
-            prompt = f"""
-            You are an intelligent AI assistant helping the user analyze an uploaded document.
-            The user has uploaded a document, and relevant information has been extracted as follows:
-            ---
-            Extracted Context:
-            {context}
-            ---
-            Your priority is to:
-            1. Use the extracted context as the ground truth for answering.
-            2. Do not speculate or assume information outside the provided context.
-            3. If the context is insufficient, explain the limitation clearly but avoid using external tools unless explicitly instructed.
-
-            User Query:
-            {recontextualized_query}
-            """
+            prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
 
             # Generate agent response
             answer = agent.chat(message=prompt).response
             st.session_state.conversation_memory.append({"assistant": answer})
-
 
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
