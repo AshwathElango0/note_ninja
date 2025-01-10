@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 import spacy
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
+from llama_index.core import Document
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from tavily import TavilyClient
@@ -17,9 +17,8 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage, MessageRole
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from ocr_utils import extract_images_from_pdf, extract_text_with_easyocr
-from tools import mul_integers, add_integers, div_integers
+from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
+from tools import return_tool_list
 
 @st.cache_resource
 def load_qa_maker():
@@ -64,42 +63,12 @@ def web_search(query: str) -> str:
     results = tavily_cli.search(query=query)
     return results
 
-add_tool = FunctionTool.from_defaults(fn=add_integers)
-mul_tool = FunctionTool.from_defaults(fn=mul_integers)
-div_tool = FunctionTool.from_defaults(fn=div_integers)
+tool_list = return_tool_list()
+
 search_tool = FunctionTool.from_defaults(fn=web_search)
-
+tool_list.append(search_tool)
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, div_tool, search_tool], llm=gemini_model, memory=buffer)
-
-# Parallel text splitting
-def process_documents_in_parallel(documents, splitter):
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        split_results = executor.map(lambda doc: splitter.split_text(doc.text), documents)
-    return [chunk for chunks in split_results for chunk in chunks]
-
-# Build or update vector store
-def process_and_index_data(directory, embedder):
-    try:
-        reader = SimpleDirectoryReader(directory)
-        documents = reader.load_data()
-        chunks = process_documents_in_parallel(documents, splitter)
-        document_chunks = [Document(text=chunk) for chunk in chunks]
-
-        return VectorStoreIndex.from_documents(documents=document_chunks, embed_model=embedder)
-    except Exception as e:
-        st.sidebar.error(f"Error building knowledge base: {e}")
-        return None
-
-def update_vector_store(vector_store, new_documents, embedder):
-    try:
-        nodes = process_documents_in_parallel(new_documents, splitter)
-        new_docs = [Document(**{'text': node.get_content()}) for node in nodes]
-        vector_store.add_documents(documents=new_docs, embed_model=embedder)
-        return vector_store
-    except Exception as e:
-        st.sidebar.error(f"Error updating knowledge base: {e}")
-        return vector_store
+agent = ReActAgent.from_tools(tools=tool_list, llm=gemini_model, memory=buffer)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -191,10 +160,11 @@ if uploaded_note_file:
                     st.session_state.vector_store = update_vector_store(
                         st.session_state.vector_store,
                         [Document(**{'text': extracted_text})],
-                        embedder
+                        embedder,
+                        splitter
                     )
                 else:
-                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
+                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder, splitter)
 
             st.session_state.retriever = st.session_state.vector_store.as_retriever(similarity_top_k=2, vector_store_query_mode='mmr')
             st.session_state.uploaded_files.add(uploaded_note_file.name)
@@ -235,17 +205,20 @@ def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     
     # Input prompt for recontextualization
     prompt = (
-        f"""The following is the conversation history and relevant information from uploaded files:
+        f"""You are assisting a user with their queries based on the following:
         ---
         Conversation History:\n{history_context}
         ---
-        User Query: {user_query}
+        Extracted Content from User's Uploaded Document:\n{extracted_text if extracted_text.strip() else "No content extracted or uploaded."}
         ---
-        Contents of Document Uploaded by User:\n{extracted_text}
-        If the user asks a query which needs their document to be understood recontextualize the query using the contents of the document provided above.
-        The user may refer to a document(for example, they may refer to notes or PDFs or reports, whose content(if any) is provided to you)
-        Recontextualize the user's query to make it clear, self-contained, and unambiguous, and return this contextualized query.
-        There is no need to answer it.
+        The user asked: "{user_query}"
+        
+        Your task:
+        1. Recontextualize this query to make it self-contained and unambiguous.
+        2. Keep the recontextualized query in the user's voice and perspective.
+        3. Do not frame the query from your perspective or imply that the user is asking for clarification about the document.
+
+        Return the recontextualized query as if the user is directly asking it.
         """
     )
     
@@ -266,17 +239,38 @@ if st.session_state.retriever:
             retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
             
             recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
+            st.sidebar.write(recontextualized_query)
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
-            # Get response from agent
-            answer = agent.chat(message=f"""
-                                Answer the question with the context provided, to the best of your ability.
-                                Context:
-                                {' '.join(retrieved_context)}
-                                Question:
-                                {recontextualized_query}""").response
+            # Prepare prompt
+            if retrieved_context:
+                context = " ".join(retrieved_context)
+            elif st.session_state.extracted_text.strip():
+                context = st.session_state.extracted_text
+            else:
+                context = "No relevant context was provided."
+
+            prompt = f"""
+            You are an intelligent AI assistant helping the user analyze an uploaded document.
+            The user has uploaded a document, and relevant information has been extracted as follows:
+            ---
+            Extracted Context:
+            {context}
+            ---
+            Your priority is to:
+            1. Use the extracted context as the ground truth for answering.
+            2. Do not speculate or assume information outside the provided context.
+            3. If the context is insufficient, explain the limitation clearly but avoid using external tools unless explicitly instructed.
+
+            User Query:
+            {recontextualized_query}
+            """
+
+            # Generate agent response
+            answer = agent.chat(message=prompt).response
             st.session_state.conversation_memory.append({"assistant": answer})
+
 
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
