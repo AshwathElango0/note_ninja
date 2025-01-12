@@ -5,7 +5,7 @@ import atexit
 import streamlit as st
 import torch
 import numpy as np
-from transformers import pipeline, T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer
 from sentence_transformers import SentenceTransformer
 import spacy
 from llama_index.llms.gemini import Gemini
@@ -34,7 +34,7 @@ def run_model(tokenizer, model, input_string, **generator_args):
 
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
-
+ 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -184,7 +184,6 @@ with st.sidebar:
                 st.markdown("---")
         else:
             st.info("No relevant sections found.")
-
 
 def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
