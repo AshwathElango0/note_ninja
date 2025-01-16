@@ -1,3 +1,5 @@
+from llama_index.core.llms import ChatMessage, MessageRole
+
 agent_prompt = """
             You are an intelligent AI assistant helping the user analyze an uploaded document.
             The user has uploaded a document, and relevant information has been extracted as follows:
@@ -31,3 +33,15 @@ reformulation_prompt = """You are assisting a user with their queries based on t
 
             Return the recontextualized query as if the user is directly asking it.
         """
+
+def recontextualize_query(model, user_query, conversation_memory, extracted_text=''):
+    # Prepare context from history and retrieved documents
+    history_context = "\n".join([f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()])
+    
+    prompt = reformulation_prompt.format(history_context=history_context, extracted_text=extracted_text if extracted_text.strip() else "No content extracted or uploaded.", user_query=user_query)
+    
+    # Generate recontextualized query
+    response = model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
+    recontextualized_query = response.message.content
+
+    return recontextualized_query

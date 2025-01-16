@@ -69,3 +69,13 @@ def update_vector_store(vector_store, new_documents, embedder, splitter):
     except Exception as e:
         st.sidebar.error(f"Error updating knowledge base: {e}")
         return vector_store
+    
+def extract_key_sentences(model, embedder, text, top_n=5):
+    """Extract top N key sentences based on embeddings."""
+    doc = model(text)
+    sentences = [sent.text for sent in doc.sents]
+    embeddings = embedder.encode(sentences)
+    doc_embedding = embeddings.mean(axis=0)
+    similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
+    ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
+    return ranked_sentences[:top_n]

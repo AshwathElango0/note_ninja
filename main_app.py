@@ -15,10 +15,15 @@ from llama_index.core import Document
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.llms import ChatMessage, MessageRole
-from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
+from utils import (
+    process_and_index_data,
+    extract_images_from_pdf,
+    extract_text_with_easyocr,
+    update_vector_store,
+    extract_key_sentences
+)
 from tools import return_tool_list
-from prompts import agent_prompt, reformulation_prompt
+from prompts import agent_prompt, recontextualize_query
 
 @st.cache_resource
 def load_img_searcher():
@@ -72,20 +77,10 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
 nlp = spacy.load("en_core_web_sm")
 
-def extract_key_sentences(text, top_n=5):
-    """Extract top N key sentences based on embeddings."""
-    doc = nlp(text)
-    sentences = [sent.text for sent in doc.sents]
-    embeddings = sentence_embedder.encode(sentences)
-    doc_embedding = embeddings.mean(axis=0)
-    similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
-    ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
-    return ranked_sentences[:top_n]
-
 def gen_questions(text, num_questions):
     """Generate questions from text"""
     tokenizer, model = load_qa_maker()
-    key_sentences = extract_key_sentences(text, top_n=num_questions)
+    key_sentences = extract_key_sentences(nlp, sentence_embedder, text, top_n=num_questions)
     questions = []
     for sentence in key_sentences:
         question = run_q_maker(tokenizer=tokenizer, model=model, input_string=sentence)
@@ -233,18 +228,6 @@ with st.sidebar:
             else:
                 st.warning("No vector store available for image search.")
 
-def recontextualize_query(user_query, conversation_memory, extracted_text=''):
-    # Prepare context from history and retrieved documents
-    history_context = "\n".join([f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()])
-    
-    prompt = reformulation_prompt.format(history_context=history_context, extracted_text=extracted_text if extracted_text.strip() else "No content extracted or uploaded.", user_query=user_query)
-    
-    # Generate recontextualized query
-    response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
-    recontextualized_query = response.message.content
-
-    return recontextualized_query
-
 # Chat-based query interface
 if st.session_state.retriever:
     user_query = st.chat_input("Ask a question based on the uploaded notes:")    
@@ -256,7 +239,7 @@ if st.session_state.retriever:
             retrieved_context = st.session_state.retriever.retrieve(user_query)
             retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
             
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
+            recontextualized_query = recontextualize_query(gemini_model, user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
