@@ -5,7 +5,7 @@ import atexit
 import streamlit as st
 import torch
 import numpy as np
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer, AutoProcessor, CLIPModel
 from sentence_transformers import SentenceTransformer
 import spacy
 from llama_index.llms.gemini import Gemini
@@ -20,13 +20,20 @@ from tools import return_tool_list
 from prompts import agent_prompt, reformulation_prompt
 
 @st.cache_resource
+def load_img_searcher():
+    model_name = "openai/clip-vit-base-patch32"
+    model = CLIPModel.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name)
+    return model, processor
+
+@st.cache_resource
 def load_qa_maker():
     model_name = "allenai/t5-small-squad2-question-generation"
     tokenizer = T5Tokenizer.from_pretrained(model_name)
     model = T5ForConditionalGeneration.from_pretrained(model_name)
     return tokenizer, model
 
-def run_model(tokenizer, model, input_string, **generator_args):
+def run_q_maker(tokenizer, model, input_string, **generator_args):
     input_ids = tokenizer.encode(input_string, return_tensors="pt")
     res = model.generate(input_ids, **generator_args)
     output = tokenizer.batch_decode(res, skip_special_tokens=True)
@@ -74,13 +81,13 @@ def extract_key_sentences(text, top_n=5):
     ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
     return ranked_sentences[:top_n]
 
-def alt_gen_questions(text, num_questions):
+def gen_questions(text, num_questions):
     """Generate questions from text"""
     tokenizer, model = load_qa_maker()
     key_sentences = extract_key_sentences(text, top_n=num_questions)
     questions = []
     for sentence in key_sentences:
-        question = run_model(tokenizer=tokenizer, model=model, input_string=sentence)
+        question = run_q_maker(tokenizer=tokenizer, model=model, input_string=sentence)
         questions.append(question[0])
     
     return questions
@@ -161,7 +168,7 @@ if uploaded_note_file:
     # Generate questions after file processing
     if uploaded_note_file and enable_question_generation:
         with st.spinner("Generating questions from the uploaded content..."):
-            questions = alt_gen_questions(extracted_text, num_questions=num_questions)
+            questions = gen_questions(st.session_state.extracted_text, num_questions=num_questions)
             st.sidebar.success("Questions generated successfully!")
 
         st.header("Generated Questions")
@@ -171,10 +178,10 @@ if uploaded_note_file:
 with st.sidebar:
     st.subheader("Semantic Search")
     user_search_query = st.text_input("Search your notes:", placeholder="Type your search query here...")
-    if user_search_query:
+
+    if user_search_query:            
         with st.spinner("Searching for relevant sections..."):
             retrieved_context = st.session_state.retriever.retrieve(user_search_query)
-            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.0]
         
         st.subheader("Search Results")
         if retrieved_context:

@@ -9,6 +9,7 @@ agent_prompt = """
             1. Use the extracted context as the ground truth for answering.
             2. Do not speculate or assume information outside the provided context.
             3. If the context is insufficient, then make use of your tools, search the internet and find an answer if available.
+            4. You have also been provided with a code execution tool, so you can execute Python code written as a string.
 
             User Query:
             {recontextualized_query}

@@ -3,25 +3,29 @@ import easyocr
 import shutil
 import atexit
 import streamlit as st
-from PIL import Image
-import fitz
 import torch
-from transformers import pipeline
+import numpy as np
+from transformers import T5ForConditionalGeneration, T5Tokenizer, AutoProcessor, CLIPModel
 from sentence_transformers import SentenceTransformer
 import spacy
+from PIL import Image
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
+from llama_index.core import Document
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
-from llama_index.tools.tavily_research import TavilyToolSpec
-from tavily import TavilyClient
-from llama_index.core.tools import FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.llms import ChatMessage, MessageRole
-import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
+from tools import return_tool_list
+from prompts import agent_prompt, reformulation_prompt
+
+@st.cache_resource
+def load_img_searcher():
+    model_name = "openai/clip-vit-base-patch32"
+    model = CLIPModel.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name)
+    return model, processor
 
 @st.cache_resource
 def load_qa_maker():
@@ -30,7 +34,7 @@ def load_qa_maker():
     model = T5ForConditionalGeneration.from_pretrained(model_name)
     return tokenizer, model
 
-def run_model(tokenizer, model, input_string, **generator_args):
+def run_q_maker(tokenizer, model, input_string, **generator_args):
     input_ids = tokenizer.encode(input_string, return_tensors="pt")
     res = model.generate(input_ids, **generator_args)
     output = tokenizer.batch_decode(res, skip_special_tokens=True)
@@ -38,7 +42,7 @@ def run_model(tokenizer, model, input_string, **generator_args):
 
 TEMP_DIR = "./temp"
 DATA_DIR = "./data"
-
+ 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -58,89 +62,10 @@ embedder = GeminiEmbedding(model_name="models/embedding-001")
 splitter = TokenTextSplitter(chunk_size=250, chunk_overlap=50)
 reader = easyocr.Reader(['en'])  # EasyOCR Reader
 
-tavily_api_key = "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"
-tavily_tool = TavilyToolSpec(api_key=tavily_api_key)
-tavily_tool_list = tavily_tool.to_tool_list()
-
-tavily_cli = TavilyClient(api_key=tavily_api_key)
-
-def web_search(query: str) -> str:
-    """Function to search the web and obtain information using a search query"""
-    results = tavily_cli.search(query=query)
-    return results
-
-def mul_integers(a: int, b: int) -> int:
-    """Function to multiply 2 integers and return an integer"""
-    return a * b
-
-def add_integers(a: int, b: int) -> int:
-    """Function to add 2 integers and return an integer"""
-    return a + b
-
-def div_integers(a: int, b: int) -> float:
-    """Function to add 2 integers and return a float"""
-    return a / b
-
-add_tool = FunctionTool.from_defaults(fn=add_integers)
-mul_tool = FunctionTool.from_defaults(fn=mul_integers)
-div_tool = FunctionTool.from_defaults(fn=div_integers)
-search_tool = FunctionTool.from_defaults(fn=web_search)
+tool_list = return_tool_list()
 
 buffer = ChatMemoryBuffer(token_limit=10000)
-agent = ReActAgent.from_tools(tools=[add_tool, mul_tool, div_tool, search_tool], llm=gemini_model, memory=buffer)
-
-# Extract images from PDF pages using PyMuPDF
-def extract_images_from_pdf(pdf_path):
-    try:
-        doc = fitz.open(pdf_path)
-        images = []
-        for page_num in range(len(doc)):
-            pix = doc[page_num].get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
-        return images
-    except Exception as e:
-        st.sidebar.error(f"Error extracting images from PDF: {e}")
-        return []
-
-# EasyOCR text extraction
-def extract_text_with_easyocr(image):
-    try:
-        image_np = np.array(image)  # Convert PIL image to NumPy array
-        result = reader.readtext(image_np)
-        return " ".join([text[1] for text in result]).strip()
-    except Exception as e:
-        st.sidebar.error(f"Error during EasyOCR text extraction: {e}")
-        return ""
-
-# Parallel text splitting
-def process_documents_in_parallel(documents, splitter):
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        split_results = executor.map(lambda doc: splitter.split_text(doc.text), documents)
-    return [chunk for chunks in split_results for chunk in chunks]
-
-# Build or update vector store
-def process_and_index_data(directory, embedder):
-    try:
-        reader = SimpleDirectoryReader(directory)
-        documents = reader.load_data()
-        chunks = process_documents_in_parallel(documents, splitter)
-        document_chunks = [Document(text=chunk) for chunk in chunks]
-
-        return VectorStoreIndex.from_documents(documents=document_chunks, embed_model=embedder)
-    except Exception as e:
-        st.sidebar.error(f"Error building knowledge base: {e}")
-        return None
-
-def update_vector_store(vector_store, new_documents, embedder):
-    try:
-        nodes = process_documents_in_parallel(new_documents, splitter)
-        new_docs = [Document(**{'text': node.get_content()}) for node in nodes]
-        vector_store.add_documents(documents=new_docs, embed_model=embedder)
-        return vector_store
-    except Exception as e:
-        st.sidebar.error(f"Error updating knowledge base: {e}")
-        return vector_store
+agent = ReActAgent.from_tools(tools=tool_list, llm=gemini_model, memory=buffer)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -157,13 +82,13 @@ def extract_key_sentences(text, top_n=5):
     ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
     return ranked_sentences[:top_n]
 
-def alt_gen_questions(text, num_questions):
+def gen_questions(text, num_questions):
     """Generate questions from text"""
     tokenizer, model = load_qa_maker()
     key_sentences = extract_key_sentences(text, top_n=num_questions)
     questions = []
     for sentence in key_sentences:
-        question = run_model(tokenizer=tokenizer, model=model, input_string=sentence)
+        question = run_q_maker(tokenizer=tokenizer, model=model, input_string=sentence)
         questions.append(question[0])
     
     return questions
@@ -215,11 +140,10 @@ if uploaded_note_file:
                 with st.spinner("Extracting images from PDF..."):
                     images = extract_images_from_pdf(temp_note_file_path)
                 with st.spinner("Performing OCR on extracted images..."):
-                    extracted_text = "\n".join([extract_text_with_easyocr(img) for img in images])
+                    extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
             else:
                 with st.spinner("Performing OCR on the uploaded image..."):
-                    image = Image.open(temp_note_file_path)
-                    extracted_text = extract_text_with_easyocr(image)
+                    extracted_text = extract_text_with_easyocr(temp_note_file_path, reader)
 
             st.session_state.extracted_text = extracted_text
 
@@ -233,10 +157,11 @@ if uploaded_note_file:
                     st.session_state.vector_store = update_vector_store(
                         st.session_state.vector_store,
                         [Document(**{'text': extracted_text})],
-                        embedder
+                        embedder,
+                        splitter
                     )
                 else:
-                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder)
+                    st.session_state.vector_store = process_and_index_data(DATA_DIR, embedder, splitter)
 
             st.session_state.retriever = st.session_state.vector_store.as_retriever(similarity_top_k=2, vector_store_query_mode='mmr')
             st.session_state.uploaded_files.add(uploaded_note_file.name)
@@ -244,7 +169,7 @@ if uploaded_note_file:
     # Generate questions after file processing
     if uploaded_note_file and enable_question_generation:
         with st.spinner("Generating questions from the uploaded content..."):
-            questions = alt_gen_questions(extracted_text, num_questions=num_questions)
+            questions = gen_questions(st.session_state.extracted_text, num_questions=num_questions)
             st.sidebar.success("Questions generated successfully!")
 
         st.header("Generated Questions")
@@ -254,10 +179,11 @@ if uploaded_note_file:
 with st.sidebar:
     st.subheader("Semantic Search")
     user_search_query = st.text_input("Search your notes:", placeholder="Type your search query here...")
-    if user_search_query:
+    user_img_query = st.file_uploader("Image similarity search", type=['jpg', 'png', 'jpeg'])
+
+    if user_search_query:            
         with st.spinner("Searching for relevant sections..."):
             retrieved_context = st.session_state.retriever.retrieve(user_search_query)
-            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.0]
         
         st.subheader("Search Results")
         if retrieved_context:
@@ -267,37 +193,62 @@ with st.sidebar:
                 st.markdown("---")
         else:
             st.info("No relevant sections found.")
+    if user_img_query:
+        with st.spinner("Processing image query..."):
+            clip_model, clip_processor = load_img_searcher()
+            img = Image.open(user_img_query).convert("RGB")
+            inputs = clip_processor(images=img, return_tensors="pt", padding=True)
+            with torch.no_grad():
+                query_embedding = clip_model.get_image_features(**inputs)
+                query_embedding /= query_embedding.norm(dim=-1, keepdim=True)
 
+            if st.session_state.vector_store:
+                retriever = st.session_state.vector_store.as_retriever(similarity_top_k=20)
+                docs = retriever.retrieve('Kitty kitty cat cat kit kat?')
+                embeddings = [embedder.get_text_embedding(doc.text) for doc in docs]
+
+                min_dim = min(query_embedding.shape[1], len(embeddings[0]))
+                query_embedding_truncated = query_embedding[:, :min_dim].cpu().numpy()
+                truncated_embeddings = [emb[:min_dim] for emb in embeddings]
+
+                similarities = []
+                for node_embedding in truncated_embeddings:
+                    similarity = np.dot(query_embedding_truncated.flatten(), node_embedding)
+                    similarities.append(similarity)
+
+                sorted_indices = np.argsort(similarities)[::-1]
+                sorted_similarities = [similarities[i] for i in sorted_indices]
+                sorted_doc_embeds = [embeddings[i] for i in sorted_indices]
+
+                st.subheader("Image Similarity Search Results")
+                num_results = min(1, len(sorted_doc_embeds))  # Display the best match
+                if num_results > 0:
+                    for i in range(num_results):
+                        doc = docs[i]
+                        similarity = sorted_similarities[i]
+                        st.write(f"**Text:** {doc.text}")
+                        st.write("---")
+                else:
+                    st.write("No similar results found")
+            else:
+                st.warning("No vector store available for image search.")
 
 def recontextualize_query(user_query, conversation_memory, extracted_text=''):
     # Prepare context from history and retrieved documents
-    history_context = "\n".join(
-        [f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()]
-    )
+    history_context = "\n".join([f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()])
     
-    # Input prompt for recontextualization
-    prompt = (
-        f"""The following is the conversation history and relevant information from uploaded files:
-        ---
-        Conversation History:\n{history_context}
-        ---
-        User Query: {user_query}
-        ---
-        Contents of Document Uploaded by User:\n{extracted_text}
-        If the user asks a query which needs their document to be understood recontextualize the query using the contents of the document provided above.
-        Recontextualize the user's query to make it clear, self-contained, and unambiguous.
-        """
-    )
+    prompt = reformulation_prompt.format(history_context=history_context, extracted_text=extracted_text if extracted_text.strip() else "No content extracted or uploaded.", user_query=user_query)
     
     # Generate recontextualized query
     response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
     recontextualized_query = response.message.content
-    
+
     return recontextualized_query
 
 # Chat-based query interface
 if st.session_state.retriever:
-    user_query = st.chat_input("Ask a question based on the uploaded notes:")
+    user_query = st.chat_input("Ask a question based on the uploaded notes:")    
+
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
@@ -309,11 +260,18 @@ if st.session_state.retriever:
             st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
-            # Get response from agent
-            answer = agent.chat(message=f"""Context:
-                                {' '.join(retrieved_context)}
-                                Question:
-                                {recontextualized_query}""").response
+            # Prepare prompt
+            if retrieved_context:
+                context = " ".join(retrieved_context)
+            elif st.session_state.extracted_text.strip():
+                context = st.session_state.extracted_text
+            else:
+                context = "No relevant context was provided."
+
+            prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
+
+            # Generate agent response
+            answer = agent.chat(message=prompt).response
             st.session_state.conversation_memory.append({"assistant": answer})
 
     for message in st.session_state.conversation_memory:
