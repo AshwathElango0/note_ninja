@@ -1,35 +1,45 @@
-from transformers import DonutProcessor, VisionEncoderDecoderModel
-from PIL import Image
+import contextlib
+import io
 
-def extract_text_from_image(image_path):
+def execute_code(code: str) -> dict:
     """
-    Extracts text from an image using the Donut model.
-
-    Args:
-        image_path (str): Path to the input image.
-
+    Executes Python code and returns the result or error.
+    
+    Parameters:
+        code (str): The Python code to execute.
+    
     Returns:
-        str: Extracted text from the image.
+        dict: A dictionary with 'success', 'output', and 'error' keys.
     """
-    # Load the Donut processor and model
-    processor = DonutProcessor.from_pretrained("nielsr/donut-base")
-    model = VisionEncoderDecoderModel.from_pretrained("nielsr/donut-base")
+    # Sandbox for executing the code
+    safe_globals = {"__builtins__": {"print": print}}  # Restrict built-ins
+    safe_locals = {}
 
-    # Open the image
-    image = Image.open(image_path).convert("RGB")
+    # Capture the output
+    output_buffer = io.StringIO()
+    result = {"success": False, "output": None, "error": None}
 
-    # Preprocess the image
-    pixel_values = processor(image, return_tensors="pt").pixel_values
+    try:
+        with contextlib.redirect_stdout(output_buffer):
+            exec(code, safe_globals, safe_locals)
+        result["success"] = True
+        result["output"] = output_buffer.getvalue()
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        output_buffer.close()
 
-    # Generate text using the model
-    outputs = model.generate(pixel_values, max_length=512)
+    return result
 
-    # Decode the output to text
-    extracted_text = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+# Example Usage
+code_snippet = """
+x = 10
+y = 20
+print('The sum is:', x + y)
+"""
 
-    return extracted_text
-
-# Example usage
-image_path = r"C:\Users\achus\Desktop\epoch_projects\invoice_ocr\data\wordpress-pdf-invoice-plugin-sample_page-0001.jpg"
-result = extract_text_from_image(image_path)
-print(result)
+response = execute_code(code_snippet)
+if response["success"]:
+    print("Output:", response["output"])
+else:
+    print("Error:", response["error"])

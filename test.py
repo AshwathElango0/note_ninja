@@ -210,15 +210,13 @@ if st.session_state.retriever:
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        with st.spinner("Recontextualizing your query..."):
-            retrieved_context = st.session_state.retriever.retrieve(user_query)
-            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
-            
+        with st.spinner("Recontextualizing your query..."):            
             recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
-            st.sidebar.success("Query recontextualized.")
 
         with st.spinner("Generating response..."):
-            # Prepare prompt
+            retrieved_context = st.session_state.retriever.retrieve(user_query)
+            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
+
             if retrieved_context:
                 context = " ".join(retrieved_context)
             elif st.session_state.extracted_text.strip():
