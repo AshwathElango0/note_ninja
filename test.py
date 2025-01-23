@@ -124,7 +124,7 @@ if 'conversation_memory' not in st.session_state:
 if 'extracted_text' not in st.session_state:
     st.session_state.extracted_text = ''
 
-# Process uploaded files
+# Process uploaded files here
 if uploaded_note_file:
     temp_note_file_path = os.path.join(TEMP_DIR, uploaded_note_file.name)
 
