@@ -188,6 +188,7 @@ with st.sidebar:
                 st.markdown("---")
         else:
             st.info("No relevant sections found.")
+            
     if user_img_query:
         with st.spinner("Processing image query..."):
             clip_model, clip_processor = load_img_searcher()
