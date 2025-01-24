@@ -235,27 +235,31 @@ if st.session_state.retriever:
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
-        with st.spinner("Recontextualizing your query..."):
-            retrieved_context = st.session_state.retriever.retrieve(user_query)
-            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
-            
+        with st.spinner("Recontextualizing your query..."):            
             recontextualized_query = recontextualize_query(gemini_model, user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
-            st.sidebar.success("Query recontextualized.")
+            resp_li = [x for x in recontextualized_query.split('\n') if x != '']
+            query_type = resp_li[0].split('Query Type:')[-1].strip().lower()
+            output = resp_li[1].split('Output:')[-1].strip()
 
         with st.spinner("Generating response..."):
-            # Prepare prompt
-            if retrieved_context:
-                context = " ".join(retrieved_context)
-            elif st.session_state.extracted_text.strip():
-                context = st.session_state.extracted_text
+            if 'general' in query_type:
+                st.session_state.conversation_memory.append({"assistant": output})
             else:
-                context = "No relevant context was provided."
+                retrieved_context = st.session_state.retriever.retrieve(user_query)
+                retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
 
-            prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
+                if retrieved_context:
+                    context = " ".join(retrieved_context)
+                elif st.session_state.extracted_text.strip():
+                    context = st.session_state.extracted_text
+                else:
+                    context = "No relevant context was provided."
 
-            # Generate agent response
-            answer = agent.chat(message=prompt).response
-            st.session_state.conversation_memory.append({"assistant": answer})
+                prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
+
+                # Generate agent response
+                answer = agent.chat(message=prompt).response
+                st.session_state.conversation_memory.append({"assistant": answer})
 
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
