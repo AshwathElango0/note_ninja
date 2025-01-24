@@ -8,16 +8,44 @@ import numpy as np
 from transformers import T5ForConditionalGeneration, T5Tokenizer, AutoProcessor, CLIPModel
 from sentence_transformers import SentenceTransformer
 import spacy
+from PIL import Image
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.google import GeminiEmbedding
 from llama_index.core import Document
 from llama_index.core.text_splitter import TokenTextSplitter
 from llama_index.core.agent import ReActAgent
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.llms import ChatMessage, MessageRole
-from utils import process_and_index_data, extract_images_from_pdf, extract_text_with_easyocr, update_vector_store
+from utils import (
+    process_and_index_data,
+    extract_images_from_pdf,
+    extract_text_with_easyocr,
+    update_vector_store,
+    extract_key_sentences
+)
+
+from ocr_utils import process_handwritten_script
 from tools import return_tool_list
-from prompts import agent_prompt, reformulation_prompt
+from prompts import agent_prompt, recontextualize_query
+
+import json
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import torch.nn as nn
+import torch.optim as optim
+
+import torchvision
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
+
+import cv2
+import numpy as np
+import pytesseract
+import torchvision
+from torchvision import transforms
+
+
 
 @st.cache_resource
 def load_img_searcher():
@@ -71,20 +99,10 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 sentence_embedder = SentenceTransformer("all-MiniLM-L6-v2")
 nlp = spacy.load("en_core_web_sm")
 
-def extract_key_sentences(text, top_n=5):
-    """Extract top N key sentences based on embeddings."""
-    doc = nlp(text)
-    sentences = [sent.text for sent in doc.sents]
-    embeddings = sentence_embedder.encode(sentences)
-    doc_embedding = embeddings.mean(axis=0)
-    similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
-    ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
-    return ranked_sentences[:top_n]
-
 def gen_questions(text, num_questions):
     """Generate questions from text"""
     tokenizer, model = load_qa_maker()
-    key_sentences = extract_key_sentences(text, top_n=num_questions)
+    key_sentences = extract_key_sentences(nlp, sentence_embedder, text, top_n=num_questions)
     questions = []
     for sentence in key_sentences:
         question = run_q_maker(tokenizer=tokenizer, model=model, input_string=sentence)
@@ -124,7 +142,7 @@ if 'conversation_memory' not in st.session_state:
 if 'extracted_text' not in st.session_state:
     st.session_state.extracted_text = ''
 
-# Process uploaded files here
+# Process uploaded files
 if uploaded_note_file:
     temp_note_file_path = os.path.join(TEMP_DIR, uploaded_note_file.name)
 
@@ -140,6 +158,9 @@ if uploaded_note_file:
                     images = extract_images_from_pdf(temp_note_file_path)
                 with st.spinner("Performing OCR on extracted images..."):
                     extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
+                    extracted_text = "\n".join([process_handwritten_script(img) for img in images])
+                    l = [process_handwritten_script(img) for img in images]
+                    extracted_text = "\n".join(l['text_outside_diagrams'])
             else:
                 with st.spinner("Performing OCR on the uploaded image..."):
                     extracted_text = extract_text_with_easyocr(temp_note_file_path, reader)
@@ -178,6 +199,7 @@ if uploaded_note_file:
 with st.sidebar:
     st.subheader("Semantic Search")
     user_search_query = st.text_input("Search your notes:", placeholder="Type your search query here...")
+    user_img_query = st.file_uploader("Image similarity search", type=['jpg', 'png', 'jpeg'])
 
     if user_search_query:            
         with st.spinner("Searching for relevant sections..."):
@@ -191,44 +213,79 @@ with st.sidebar:
                 st.markdown("---")
         else:
             st.info("No relevant sections found.")
+            
+    if user_img_query:
+        with st.spinner("Processing image query..."):
+            clip_model, clip_processor = load_img_searcher()
+            img = Image.open(user_img_query).convert("RGB")
+            inputs = clip_processor(images=img, return_tensors="pt", padding=True)
+            with torch.no_grad():
+                query_embedding = clip_model.get_image_features(**inputs)
+                query_embedding /= query_embedding.norm(dim=-1, keepdim=True)
 
-def recontextualize_query(user_query, conversation_memory, extracted_text=''):
-    # Prepare context from history and retrieved documents
-    history_context = "\n".join([f"{role.capitalize()}: {content}" for message in conversation_memory for role, content in message.items()])
-    
-    prompt = reformulation_prompt.format(history_context=history_context, extracted_text=extracted_text if extracted_text.strip() else "No content extracted or uploaded.", user_query=user_query)
-    
-    # Generate recontextualized query
-    response = gemini_model.chat([ChatMessage(content=prompt, role=MessageRole.USER)])
-    recontextualized_query = response.message.content
+            if st.session_state.vector_store:
+                retriever = st.session_state.vector_store.as_retriever(similarity_top_k=20)
+                docs = retriever.retrieve('Kitty kitty cat cat kit kat?')
+                embeddings = [embedder.get_text_embedding(doc.text) for doc in docs]
 
-    return recontextualized_query
+                min_dim = min(query_embedding.shape[1], len(embeddings[0]))
+                query_embedding_truncated = query_embedding[:, :min_dim].cpu().numpy()
+                truncated_embeddings = [emb[:min_dim] for emb in embeddings]
+
+                similarities = []
+                for node_embedding in truncated_embeddings:
+                    similarity = np.dot(query_embedding_truncated.flatten(), node_embedding)
+                    similarities.append(similarity)
+
+                sorted_indices = np.argsort(similarities)[::-1]
+                sorted_similarities = [similarities[i] for i in sorted_indices]
+                sorted_doc_embeds = [embeddings[i] for i in sorted_indices]
+
+                st.subheader("Image Similarity Search Results")
+                num_results = min(1, len(sorted_doc_embeds))  # Display the best match
+                if num_results > 0:
+                    for i in range(num_results):
+                        doc = docs[i]
+                        similarity = sorted_similarities[i]
+                        st.write(f"**Text:** {doc.text}")
+                        st.write("---")
+                else:
+                    st.write("No similar results found")
+            else:
+                st.warning("No vector store available for image search.")
 
 # Chat-based query interface
 if st.session_state.retriever:
-    user_query = st.chat_input("Ask a question based on the uploaded notes:")
+    user_query = st.chat_input("Ask a question based on the uploaded notes:")    
+
     if user_query:
         st.session_state.conversation_memory.append({"user": user_query})
 
         with st.spinner("Recontextualizing your query..."):            
-            recontextualized_query = recontextualize_query(user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
+            recontextualized_query = recontextualize_query(gemini_model, user_query, st.session_state.conversation_memory, st.session_state.extracted_text)    # Recontextualize user query
+            resp_li = [x for x in recontextualized_query.split('\n') if x != '']
+            query_type = resp_li[0].split('Query Type:')[-1].strip().lower()
+            output = resp_li[1].split('Output:')[-1].strip()
 
         with st.spinner("Generating response..."):
-            retrieved_context = st.session_state.retriever.retrieve(user_query)
-            retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
-
-            if retrieved_context:
-                context = " ".join(retrieved_context)
-            elif st.session_state.extracted_text.strip():
-                context = st.session_state.extracted_text
+            if 'general' in query_type:
+                st.session_state.conversation_memory.append({"assistant": output})
             else:
-                context = "No relevant context was provided."
+                retrieved_context = st.session_state.retriever.retrieve(user_query)
+                retrieved_context = [doc.text for doc in retrieved_context if doc.score >= 0.75]
 
-            prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
+                if retrieved_context:
+                    context = " ".join(retrieved_context)
+                elif st.session_state.extracted_text.strip():
+                    context = st.session_state.extracted_text
+                else:
+                    context = "No relevant context was provided."
 
-            # Generate agent response
-            answer = agent.chat(message=prompt).response
-            st.session_state.conversation_memory.append({"assistant": answer})
+                prompt = agent_prompt.format(context=context, recontextualized_query=recontextualized_query)
+
+                # Generate agent response
+                answer = agent.chat(message=prompt).response
+                st.session_state.conversation_memory.append({"assistant": answer})
 
     for message in st.session_state.conversation_memory:
         for role, content in message.items():
