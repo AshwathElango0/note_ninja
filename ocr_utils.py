@@ -21,7 +21,7 @@ num_classes = 8
 in_features = model.roi_heads.box_predictor.cls_score.in_features
 model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, num_classes)
 
-model.load_state_dict(torch.load(r"C:\Users\ankit\Projects\Ninja_Note\arrow_resnet.pth"))
+model.load_state_dict(torch.load(r"C:\Users\achus\Desktop\epoch_projects\note_ninja\arrow_resnet.pth"))
 model.eval()
 
 # Function to preprocess input image
