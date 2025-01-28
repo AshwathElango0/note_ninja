@@ -1,0 +1,1 @@
+One purpose of APIs is to hide the internal details of how a system works, exposing only those parts that a programmer will find useful, and keeping them consistent even if the internal details change later: An API may be custom-built for a particular pair of systems, or it may be a shared standard allowing interoperability among many systems_

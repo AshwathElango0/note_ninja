@@ -79,3 +79,43 @@ def extract_key_sentences(model, embedder, text, top_n=5):
     similarities = [np.dot(sent_emb, doc_embedding) for sent_emb in embeddings]
     ranked_sentences = [sent for _, sent in sorted(zip(similarities, sentences), reverse=True)]
     return ranked_sentences[:top_n]
+
+def combine_flowchart_outputs(page_outputs):
+    """
+    Combines flowchart outputs from multiple pages into a meaningful string for an LLM.
+
+    Args:
+        page_outputs (list): List of tuples where each tuple contains (flowchart, graph) 
+                             for a single page.
+
+    Returns:
+        str: A combined textual representation of all pages.
+    """
+    combined_string = []
+    
+    for page_num, (flowchart, graph) in enumerate(page_outputs, start=1):
+        # Page header
+        combined_string.append(f"Page {page_num}:\n")
+        
+        # Extract nodes
+        nodes = flowchart.get("nodes", [])
+        combined_string.append("Nodes:\n")
+        for node in nodes:
+            combined_string.append(f"  - ID: {node['id']}, Text: \"{node['label']}\"\n")
+        
+        # Extract edges
+        edges = flowchart.get("edges", [])
+        combined_string.append("Edges:\n")
+        for edge in edges:
+            combined_string.append(f"  - From Node {edge['from']} to Node {edge['to']}\n")
+        
+        # Extract annotations
+        annotations = flowchart.get("annotations", "").strip()
+        if annotations:
+            combined_string.append(f"Annotations: {annotations}\n")
+        
+        # Add a separator between pages
+        combined_string.append("\n" + "-" * 50 + "\n")
+
+    # Combine all parts into a single string
+    return "".join(combined_string)

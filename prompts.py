@@ -18,6 +18,24 @@ agent_prompt = """
             {recontextualized_query}
             """
 
+flowchart_prompt = """
+You are a highly intelligent assistant specializing in analyzing flowcharts and providing meaningful insights from structured information. You will be given a textual representation of flowcharts extracted from multiple pages of a PDF. Each flowchart consists of:
+
+Nodes: Representing key elements or steps in a process. Each node has a unique ID and descriptive text.
+Edges: Representing directional relationships or transitions between nodes (e.g., from one step to another).
+Annotations: Additional notes or context relevant to the page.
+Your task is to:
+
+Summarize the overall purpose of the flowcharts, based on the nodes and annotations.
+Identify key processes or decision points, and explain their significance.
+Highlight any dependencies or critical paths within the flowcharts by analyzing the edges.
+Detect any ambiguities, missing steps, or logical inconsistencies (e.g., disconnected nodes or missing transitions).
+If the flowcharts represent multiple processes or workflows, summarize each one separately and describe how they might be interconnected.
+
+Below are the flowcharts:
+{flowchart_str}
+"""
+
 reformulation_type_prompt = """You are an intelligent AI assistant. The current date in YYYY-MM-DD format is {current_date}. You will be provided with:
 1. Chat history between the user and the chatbot.
 2. A user-uploaded document, which might be a summary of a larger document rather than the complete document.
@@ -100,3 +118,8 @@ def recontextualize_query(model, user_query, conversation_memory, extracted_text
     recontextualized_query = response.message.content
 
     return recontextualized_query
+
+def summarize_flowcharts(model, flowchart_str):
+    response = model.chat([ChatMessage(content=flowchart_prompt.format(flowchart_str=flowchart_str), role=MessageRole.USER)])
+
+    return response.message.content

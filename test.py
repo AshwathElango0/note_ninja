@@ -20,32 +20,13 @@ from utils import (
     extract_images_from_pdf,
     extract_text_with_easyocr,
     update_vector_store,
-    extract_key_sentences
+    extract_key_sentences,
+    combine_flowchart_outputs
 )
 
-from ocr_utils import process_handwritten_script
+from ocr_utils import process_handwritten_script, process_arrow_rcnn_output
 from tools import return_tool_list
-from prompts import agent_prompt, recontextualize_query
-
-import json
-import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import torch.nn as nn
-import torch.optim as optim
-
-import torchvision
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
-
-import cv2
-import numpy as np
-import pytesseract
-import torchvision
-from torchvision import transforms
-
-
+from prompts import agent_prompt, recontextualize_query, summarize_flowcharts
 
 @st.cache_resource
 def load_img_searcher():
@@ -157,10 +138,13 @@ if uploaded_note_file:
                 with st.spinner("Extracting images from PDF..."):
                     images = extract_images_from_pdf(temp_note_file_path)
                 with st.spinner("Performing OCR on extracted images..."):
-                    extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
-                    extracted_text = "\n".join([process_handwritten_script(img) for img in images])
-                    l = [process_handwritten_script(img) for img in images]
-                    extracted_text = "\n".join(l['text_outside_diagrams'])
+                    # extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
+                    l = [process_handwritten_script(img)['text_outside_diagrams'] for img in images]
+                    extracted_text = "\n".join(l)
+                    extracted_info = [process_handwritten_script(img) for img in images]
+                    extracted_info = [process_arrow_rcnn_output(info) for info in extracted_info]
+                    flowchart_str = combine_flowchart_outputs(extracted_info)
+                    extracted_text = summarize_flowcharts(gemini_model, flowchart_str)
             else:
                 with st.spinner("Performing OCR on the uploaded image..."):
                     extracted_text = extract_text_with_easyocr(temp_note_file_path, reader)
