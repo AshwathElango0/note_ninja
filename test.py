@@ -138,9 +138,6 @@ if uploaded_note_file:
                 with st.spinner("Extracting images from PDF..."):
                     images = extract_images_from_pdf(temp_note_file_path)
                 with st.spinner("Performing OCR on extracted images..."):
-                    # extracted_text = "\n".join([extract_text_with_easyocr(img, reader) for img in images])
-                    l = [process_handwritten_script(img)['text_outside_diagrams'] for img in images]
-                    extracted_text = "\n".join(l)
                     extracted_info = [process_handwritten_script(img) for img in images]
                     extracted_info = [process_arrow_rcnn_output(info) for info in extracted_info]
                     flowchart_str = combine_flowchart_outputs(extracted_info)
@@ -148,7 +145,20 @@ if uploaded_note_file:
             else:
                 with st.spinner("Performing OCR on the uploaded image..."):
                     extracted_text = extract_text_with_easyocr(temp_note_file_path, reader)
+                    if isinstance(temp_note_file_path, Image.Image):  # If input is a PIL Image object
+                        image = temp_note_file_path
+                    elif isinstance(temp_note_file_path, str):  # If input is a file path
+                        image = Image.open(temp_note_file_path)
+                        image = image.convert(mode='RGB')
+                    else:
+                        raise ValueError("Input must be a file path (str) or a PIL Image object.")
+                    extracted_info = process_handwritten_script(image)
+                    print(extracted_info)
+                    extracted_info = process_arrow_rcnn_output(extracted_info)
+                    flowchart_str = combine_flowchart_outputs([extracted_info])
+                    extracted_text = summarize_flowcharts(gemini_model, flowchart_str)
 
+                    st.success(extracted_text)
             st.session_state.extracted_text = extracted_text
 
             with st.spinner("Saving extracted text to file..."):
