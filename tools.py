@@ -2,6 +2,7 @@ from llama_index.core.tools import FunctionTool
 from tavily import TavilyClient
 import io
 import math
+import os
 import random
 import contextlib
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
@@ -42,7 +43,7 @@ def execute_code(code: str) -> dict:
         dict: A dictionary with 'success', 'output', and 'error' keys.
     """
     # Sandbox for executing the code
-    safe_globals = {"__builtins__": {"print": print, "math": math, "random": random}}  # Restrict built-ins
+    safe_globals = {"__builtins__": {"print": print, "math": math, "random": random, "os": os}}  # Restrict built-ins
     safe_locals = {}
 
     # Capture the output
