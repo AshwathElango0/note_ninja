@@ -1,6 +1,6 @@
 import os
-import easyocr
 import shutil
+import easyocr
 import atexit
 import streamlit as st
 import torch
