@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 tavily_api_key = "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"
 tavily_cli = TavilyClient(api_key=tavily_api_key)
 
-model_name = "SEBIS/code_trans_t5_small_source_code_summarization_python_multitask_finetune"
+model_name = "SEBIS/code_trans_t5_large_source_code_summarization_python_multitask_finetune"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, padding=True)
 model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
